@@ -1,0 +1,34 @@
+[project]
+name = "telematics-insurance-predictor-prototype"
+version = "0.1.0"
+description = "Prototype telematics-based usage-based insurance platform (models + frontend)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Harrison Lin" }]
+dependencies = [
+	"xgboost>=1.7.0",
+	"pandas>=2.0.0",
+	"scikit-learn>=1.3.0",
+	"numpy>=1.24.0",
+    "pydantic"
+]
+
+[project.optional-dependencies]
+dev = [
+	"jupyter",
+	"mypy",
+	"black",
+	"pytest",
+    "pylint",
+    "boto3"
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+

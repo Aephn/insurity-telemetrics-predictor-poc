@@ -1,6 +1,10 @@
 # Created by https://www.toptal.com/developers/gitignore/api/python,macos,linux,windows,node,react,reactnative
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,macos,linux,windows,node,react,reactnative
 
+### Project-Specific ###
+
+artifacts
+
 ### Linux ###
 *~
 

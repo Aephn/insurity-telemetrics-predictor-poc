@@ -112,4 +112,3 @@ Focus areas for future completeness:
 ---
 
 This README will evolve as backend components are added.
-
