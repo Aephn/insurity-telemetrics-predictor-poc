@@ -1,7 +1,7 @@
 # XGBoost Telematics Risk Model Documentation
 
 ## Purpose
-This document explains the structure, assumptions, parameters, and transformation formulas of the prototype XGBoost model implemented in `models/xgboost_sagemaker.py`. It supports a usage-based (UBI) auto insurance pricing workflow by mapping aggregated telematics behavior metrics to a continuous risk estimate and downstream premium & safety score transformations.
+This document explains the structure, assumptions, parameters, and transformation formulas of the prototype XGBoost model implemented in `models/aws_sagemaker/xgboost_model.py` (script-mode compatible). It supports a usage-based (UBI) auto insurance pricing workflow by mapping aggregated telematics behavior metrics to a continuous risk estimate and downstream premium & safety score / pricing transformations.
 
 ---
 ## Conceptual Layers
@@ -25,8 +25,15 @@ This document explains the structure, assumptions, parameters, and transformatio
 | `target_risk` | LABEL: latent synthetic risk (0-1) | float | To be replaced by real target |
 
 ---
-## Synthetic Data Generation (Current Implementation v2)
-The original simple linear + sigmoid generator has been replaced by a richer process (`synthesize_dataset_improved`) introducing population heterogeneity, non-linear interactions, and weak seasonality. This produces more varied learning signals and a wider, smoother risk spectrum.
+## Synthetic Data Generation (Current Implementation v3)
+The original simple linear + sigmoid generator evolved through multiple iterations. The current version (`synthesize_dataset_improved`) introduces:
+1. Population heterogeneity via archetypes.
+2. Non-linear & interaction effects.
+3. Mild seasonality.
+4. Correlated prior claim counts.
+5. (New) Stronger emphasis on speeding via BOTH linear and convex (quadratic) terms plus a higher-weight speed×braking interaction to increase model sensitivity to aggressive speed behavior.
+
+This version targets a broader effective gradient zone so that incremental worsening (especially in speeding) materially shifts predicted risk.
 
 ### 1. Driver Archetypes
 Each synthetic driver is assigned one of three archetypes with probabilities (safe 70%, moderate 20%, risky 10%). Each archetype sets a base risk anchor and governs feature distributions.
@@ -40,20 +47,24 @@ Each synthetic driver is assigned one of three archetypes with probabilities (sa
 ### 2. Feature Sampling by Archetype
 Gamma / normal draws differ per archetype to shift means and dispersion (e.g., risky drivers have higher shape & scale for harsh braking). Tailgating ratio and night miles are clipped to realistic bounds.
 
-### 3. Interaction & Non-linear Effects
-A latent interaction augments the linear risk driver:
+### 3. Interaction & Non-linear Effects (Updated Emphasis)
+Updated risk core (weights changed to increase sensitivity to speeding):
 ```
-tailgating_effect           = tailgating_time_ratio * 2.0
-speed_braking_interaction   = (speeding_minutes_per_100mi / 10) * (hard_braking_events_per_100mi / 5) * 0.5
+tailgating_effect         = tailgating_time_ratio * 2.0
+speed_braking_interaction = (speeding_minutes_per_100mi / 10) * (hard_braking_events_per_100mi / 5) * 0.6
+speeding_linear           = 0.10 * speeding_minutes_per_100mi
+speeding_convex           = 0.02 * (speeding_minutes_per_100mi ** 2 / 100.0)
 
 linear_risk = (tailgating_effect
                + 0.08 * hard_braking_events_per_100mi
                + 0.06 * aggressive_turning_events_per_100mi
-               + 0.04 * speeding_minutes_per_100mi
+               + speeding_linear
+               + speeding_convex
                + 0.03 * late_night_miles_per_100mi
                + 0.02 * prior_claim_count
                + speed_braking_interaction)
 ```
+Rationale: Steeper slope + curvature for speeding yields larger marginal differences between mid and extreme behaviors, addressing earlier low output variance.
 
 ### 4. Seasonality
 A mild seasonal factor (sine wave over period index) inflates or deflates risk:
@@ -62,12 +73,13 @@ seasonal_factor = 1 + 0.1 * sin(2π * period_index / 12)
 ```
 
 ### 5. Noise & Transformation
-Gaussian noise (σ≈0.08) is applied before a logistic squashing step with a shifted center; then combined with the archetype base risk and seasonality:
+Gaussian noise (σ≈0.07) is applied then passed through a logistic with a **slightly lower center (0.9)** to widen mid-range gradient sensitivity:
 ```
-raw_sigmoid = 1 / (1 + exp(-(linear_risk + noise - 1.0)))
+raw_sigmoid = 1 / (1 + exp(-(linear_risk + noise - 0.9)))
 risk = base_risk + raw_sigmoid * seasonal_factor
 risk = clip(risk, 0.01, 0.99)
 ```
+Lowering the center from 1.0 → 0.9 increases slope at moderate linear_risk values, widening score separation for common risk scenarios.
 
 ### 6. Prior Claims Coupling
 `prior_claim_count` is sampled from a Poisson whose rate scales with `base_risk`, creating natural correlation between historical claims and current generated risk (emulating real-world signal leakage you’d later control for via temporal separation in a production pipeline).
@@ -123,24 +135,87 @@ In production replace this generator with actual aggregated features & targets (
 - Use SageMaker Hyperparameter Tuner referencing `validation:rmse`.
 
 ---
-## Risk → Premium Mapping (Prototype)
-After inference, each row yields a raw `risk_score` (model prediction). Convert to a premium adjustment multiplier:
-```
-premium_multiplier = 1 + (risk_score - baseline_risk) * k
-```
-Where:
-- `baseline_risk` = mean training target (stored in `meta.json`)
-- `k` = scaling factor (prototype uses 0.25)
+## Risk → Premium Mapping (Prototype, Dynamic Scaling v2)
+Inference yields `risk_score` predictions which are mapped to a premium multiplier via a *dynamic scaling* mechanism using prediction distribution statistics captured at training time.
 
-Then:
+### Stored Distribution Stats
+At model training we persist (`meta.json`):
 ```
-adjusted_premium = base_premium * premium_multiplier
+{
+  "baseline_risk": <float>,
+  "dist_stats": {
+     "pred_p5": <float>,
+     "pred_p50": <float>,
+     "pred_p95": <float>,
+     "pred_std": <float>
+  }
+}
 ```
-In production this would integrate with rating components:
+The percentile spread (p95 - p5) informs a dynamic scaling factor so the effective premium band remains stable despite generator tuning.
+
+### Formula
 ```
-final_premium = base_rate * territory_factor * vehicle_factor * telematics_factor(risk_score) * taxes_fees
+scaling_factor = TARGET_SPREAD / (p95 - p5)
+premium_multiplier = 1 + (risk_score - baseline_risk) * scaling_factor
 ```
-`telematics_factor()` can be a calibrated monotonic function or a relativities table.
+Defaults:
+- `TARGET_SPREAD` (desired impact of central 90% band) defaults to 0.35 unless overridden by env var `PREMIUM_SCALING_TARGET_SPREAD`.
+- If distribution stats unavailable, fallback constant ~0.35 used.
+
+This replaces the earlier fixed `k=0.25` approach, making the pricing adjustment resilient to upstream risk distribution widening/narrowing.
+
+### Environment Override
+```
+export PREMIUM_SCALING_TARGET_SPREAD=0.45   # larger differentiation
+```
+Adjust upward for stronger incentives; monitor tail relativities.
+
+### Interpreting `risk_score` (Scale & Meaning)
+**What it IS:** A *relative*, continuous latent risk indicator produced by a regression model trained on a synthetic target in (0,1).
+
+**What it is NOT (yet):** A calibrated probability of claim / loss ratio. Because:
+1. The training objective is squared error on a synthetic, sigmoid‑shaped construct (not an observed Bernoulli outcome).
+2. No calibration step (Platt, isotonic, beta scaling) has been applied.
+3. Synthetic generation blends frequency *and* severity proxies into a single scalar.
+
+Practical interpretation today:
+```
+Lower risk_score  → comparatively safer cohort (below baseline mean)
+Higher risk_score → comparatively riskier cohort (above baseline mean)
+```
+
+### Typical Numeric Range (Prototype Data)
+The synthetic generator clips targets to [0.01, 0.99], but empirical distributions concentrate around ~0.18–0.75 with a mean (`baseline_risk`) usually ~0.30–0.40 (will appear in `meta.json`). Values outside that (e.g. <0.1 or >0.85) are tail cases and should be treated with caution until calibrated.
+
+### Choosing TARGET_SPREAD
+| Objective | TARGET_SPREAD Guidance |
+|----------|------------------------|
+| Conservative intro | 0.20–0.30 |
+| Moderate differentiation | 0.30–0.40 |
+| Aggressive | 0.40–0.55 (pair with caps) |
+
+Validate that the realized premium multiplier distribution matches intent; extremely skewed feature populations may still require capping or monotonic smoothing.
+
+### Calibration Path (Future)
+To turn `risk_score` into a probability / expected loss factor:
+1. Obtain true targets (e.g. claim frequency per exposure unit). 
+2. Retrain using an appropriate objective (`count:poisson` or `binary:logistic` for frequency). 
+3. Apply calibration (isotonic or Platt) using out‑of‑fold predictions. 
+4. Store calibration artifact; wrap inference to apply transform before premium mapping.
+
+### Safety Score Mapping (Expanded Rationale)
+If exposing a driver‑facing score, map *monotonically inverse* to risk, smooth over time, and bucket for UI clarity (e.g. A/B/C tiers). Provide relative positioning ("Top 18% safest") rather than raw decimals.
+
+### Sanity Checks Before Production
+| Check | Why |
+|-------|-----|
+| Compare distribution shift vs. training baseline_risk | Detect drift / population change |
+| Correlate risk_score with known loss proxies | Validate predictive ordering |
+| Backtest multiplier band impact on premium mix | Ensure revenue neutrality / fairness |
+| Evaluate segmentation fairness (age/territory if available) | Governance & compliance |
+| Stress test extreme feature combinations | Guardrail against extrapolation |
+
+> Until these checks are done on real data, treat the prototype multiplier as a *sandbox heuristic*.
 
 ---
 ## Risk → Safety Score Mapping (Suggested Extension)
@@ -179,7 +254,12 @@ Recommended extension:
 ```
 
 ---
-## Hyperparameter Search Space Helper
+## Hyperparameter / Retraining Controls
+Added CLI flag in local pipeline (`--force-retrain`) to force rebuild of artifacts after sensitivity changes.
+
+Environment variable (inference): `PREMIUM_SCALING_TARGET_SPREAD` adjusts dynamic scaling without retraining.
+
+### Hyperparameter Search Space Helper
 `get_hyperparameter_search_space()` returns numeric ranges to feed into SageMaker’s `HyperparameterTuner`. Example mapping:
 ```
 eta: (0.01, 0.3)
@@ -221,16 +301,17 @@ python models/aws_sagemaker/xgboost_model.py --local-train --predict-sample --mo
 |------|---------|
 | `artifacts/xgb_model.json` | Serialized XGBoost booster |
 | `artifacts/feature_pipeline.joblib` | Imputer + scaler pipeline |
-| `artifacts/meta.json` | Baseline risk metadata |
+| `artifacts/meta.json` | Baseline risk + distribution stats |
 | `artifacts/metrics.json` (SageMaker) | Validation metrics (optional) |
 
 ---
 ## Next Steps
 1. Add explicit safety score + mapping function to `predict_fn`.
 2. Integrate SHAP for driver-level factor explanations.
-3. Move synthetic generation out once real aggregated feature process is ready.
+3. Evaluate calibration (isotonic / Platt) on real labels.
 4. Introduce versioned model promotion pipeline (dev → staging → prod).
-5. Implement monitoring lambda / batch job to recompute + push updated factors nightly.
+5. Implement monitoring job using distribution stats to detect drift (compare live p5/p95 vs training values). 
+6. Add multiplier capping & guardrails (e.g., clamp to [0.7, 1.4]) configurable by product line.
 
 ---
 **Contact / Ownership**: Add model steward details here once assigned.
