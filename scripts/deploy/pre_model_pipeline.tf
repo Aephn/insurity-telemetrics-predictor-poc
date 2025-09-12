@@ -21,6 +21,10 @@ terraform {
       source  = "hashicorp/archive"
       version = ">= 2.4.0"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.2.0"
+    }
   }
 }
 
@@ -40,6 +44,16 @@ variable "validation_source_dir" {
   type    = string
   default = "../../src/aws_lambda/validation"
 }
+variable "python_executable" {
+  description = "Python executable to use for dependency installation"
+  type        = string
+  default     = "python3"
+}
+variable "validation_dependencies" {
+  description = "Python packages to vendor directly into the validation lambda zip (built via external script)"
+  type        = list(string)
+  default     = ["pydantic"]
+}
 variable "feature_source_dir" {
   type    = string
   default = "../../src/aws_lambda/feature_extraction"
@@ -54,6 +68,30 @@ locals {
   tags        = { Environment = var.env, Service = "telemetry-min" }
 }
 
+# Build validation lambda deployment package including dependencies at apply time.
+# We compute a plan-safe change key from source files + dependency list, and use
+# a local-exec to produce the zip before Lambda code upload.
+locals {
+  validation_src_files = fileset(var.validation_source_dir, "**")
+  validation_src_hash  = sha256(join("", [for f in local.validation_src_files : filesha256("${var.validation_source_dir}/${f}")]))
+  validation_deps_key  = join(",", var.validation_dependencies)
+  validation_code_change_key = base64sha256("${local.validation_src_hash}|${local.validation_deps_key}")
+  validation_bundle_path = "${path.module}/validation_lambda_bundle.zip"
+}
+
+resource "null_resource" "validation_build" {
+  # Rebuild bundle when source or deps change
+  triggers = {
+    code = local.validation_code_change_key
+  }
+
+  provisioner "local-exec" {
+    working_dir = path.module
+  command     = "VALIDATION_DEPS=\"${join(" ", var.validation_dependencies)}\" USE_DOCKER=1 ./build_validation_bundle.sh --no-upload"
+    interpreter = ["/bin/bash", "-lc"]
+  }
+}
+
 resource "aws_kinesis_stream" "events" {
   name             = "${local.name_prefix}-events"
   shard_count      = var.kinesis_shard_count
@@ -64,17 +102,13 @@ resource "aws_kinesis_stream" "events" {
   tags = local.tags
 }
 
-data "archive_file" "validation_zip" {
-  type        = "zip"
-  source_dir  = var.validation_source_dir
-  output_path = "validation_lambda.zip"
-}
-
 data "archive_file" "feature_zip" {
   type        = "zip"
   source_dir  = var.feature_source_dir
   output_path = "feature_lambda.zip"
 }
+
+## (feature zip data block relocated above)
 
 resource "aws_iam_role" "validation_role" {
   name = "${local.name_prefix}-validation-role"
@@ -125,17 +159,24 @@ resource "aws_lambda_function" "validation" {
   role          = aws_iam_role.validation_role.arn
   handler       = "handler.lambda_handler"
   runtime       = "python3.11"
-  filename         = data.archive_file.validation_zip.output_path
-  source_code_hash = data.archive_file.validation_zip.output_base64sha256
+  filename         = local.validation_bundle_path
+  # Plan-safe content key derived from source + deps; triggers updates without
+  # requiring the zip to exist at plan time.
+  source_code_hash = local.validation_code_change_key
   timeout       = 10
   memory_size   = 256
+  architectures = ["arm64"]
   environment {
     variables = {
       KINESIS_STREAM_NAME = aws_kinesis_stream.events.name
       ENV                 = var.env
     }
   }
-  depends_on = [aws_iam_role_policy_attachment.validation_basic, aws_iam_role_policy.validation_kinesis_write]
+  depends_on = [
+    aws_iam_role_policy_attachment.validation_basic,
+    aws_iam_role_policy.validation_kinesis_write,
+    null_resource.validation_build
+  ]
   tags       = local.tags
 }
 

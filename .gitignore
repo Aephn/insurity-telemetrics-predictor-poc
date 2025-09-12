@@ -1,12 +1,15 @@
 # Created by https://www.toptal.com/developers/gitignore/api/node,linux,macos,react,python,windows,reactnative,terraform
 # Edit at https://www.toptal.com/developers/gitignore?templates=node,linux,macos,react,python,windows,reactnative,terraform
 
-### Trained Model ###
+### Repo-Specific Ignores ###
 
 artifacts
 .terraform
 # omit lock file
 .terraform.lock.hcl
+validation_build
+deps_build_work
+validation_build_work
 
 ### Linux ###
 *~
