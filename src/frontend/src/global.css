@@ -1,0 +1,15 @@
+/* Global theme adjustments */
+html, body { background: #0f1419; color: #d8dde2; }
+
+/* Custom scrollbar (WebKit) */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: #141a21; border-radius: 8px; }
+*::-webkit-scrollbar-thumb { background: #27313b; border-radius: 8px; border: 2px solid #141a21; }
+*::-webkit-scrollbar-thumb:hover { background: #32404d; }
+
+/* Firefox */
+* { scrollbar-width: thin; scrollbar-color: #27313b #141a21; }
+
+/* Events feed specific (optional tighter track) */
+.events-scroll { scrollbar-color: #2f3a44 #151a21; }
+

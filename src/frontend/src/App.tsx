@@ -15,9 +15,7 @@ export default function App() {
       {data && (
         <div style={{ display:'flex', flexDirection:'column', gap: '1.25rem' }}>
           <div style={{ display:'flex', alignItems:'flex-end', gap:'1rem', flexWrap:'wrap' }}>
-            <div style={{ fontSize: '2.25rem', fontWeight: 600, lineHeight: 1.1 }}>
-              Hello {data.profile.name}.
-            </div>
+            <div style={{ fontSize: '2.25rem', fontWeight: 600, lineHeight: 1.1 }}>Hello {data.profile.name}.</div>
             <div style={{ fontSize:12, padding:'4px 8px', borderRadius:6, background:'#1d242c', border:'1px solid #2b343d', display:'flex', gap:6, alignItems:'center' }}>
               <span style={{ opacity:0.6 }}>Data Source:</span>
               <strong style={{ color: mode === 'backend' ? '#5dd39e' : '#ffaa00' }}>{mode}</strong>

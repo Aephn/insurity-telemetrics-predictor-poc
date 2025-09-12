@@ -7,9 +7,9 @@ export function PremiumHistoryChart({ history }: Props) {
   return (
     <div style={card}>
       <h2 style={h2}>Premium & Safety History</h2>
-      <div style={{ width: '100%', height: 260 }}>
+  <div style={{ width: '100%', height: 220 }}>
         <ResponsiveContainer>
-          <LineChart data={history} margin={{ left: 8, right: 16, top: 10, bottom: 4 }}>
+          <LineChart data={history} margin={{ left: 16, right: 24, top: 16, bottom: 12 }}>
             <CartesianGrid stroke="#1f242b" />
             <XAxis dataKey="month" stroke="#6b7682" tickFormatter={(v: string) => {
               // Expect YYYY-MM; fallback to original if unexpected
@@ -18,9 +18,9 @@ export function PremiumHistoryChart({ history }: Props) {
                 return `${m}/${y.slice(-2)}`;
               }
               return v;
-            }} />
-            <YAxis yAxisId="left" stroke="#6b7682" />
-            <YAxis yAxisId="right" orientation="right" stroke="#6b7682" domain={[0,100]} />
+            }} tickMargin={8} />
+            <YAxis yAxisId="left" stroke="#6b7682" tickFormatter={(v:number)=>`$${v}`} tickMargin={8} />
+            <YAxis yAxisId="right" orientation="right" stroke="#6b7682" domain={[0,100]} tickMargin={8} />
             <Tooltip contentStyle={{ background:'#14181d', border:'1px solid #2a323a', borderRadius:8 }} />
             <Line yAxisId="left" type="monotone" dataKey="premium" stroke="#4dabf7" strokeWidth={2} dot={false} name="Premium ($)" />
             <Line yAxisId="right" type="monotone" dataKey="safetyScore" stroke="#5dd39e" strokeWidth={2} dot={false} name="Safety Score" />
