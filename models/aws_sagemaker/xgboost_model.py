@@ -115,6 +115,8 @@ FEATURE_COLUMNS = [
     "late_night_miles_per_100mi",
     "miles",
     "prior_claim_count",
+    "car_value",
+    "car_sportiness",
 ]
 TARGET_COLUMN = "target_risk"
 
@@ -241,7 +243,13 @@ def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.Da
                     "late_night_miles_per_100mi": late_night_miles,
                     "miles": miles,
                     "prior_claim_count": prior_claims,
-                    "driver_type": driver_type,  # Keep for validation
+                    # synthetic car attributes (positive correlation with risk via severity & behavior)
+                    "car_value": RNG.normal(35000, 12000) if driver_type != "risky" else RNG.normal(45000,15000),
+                    "car_sportiness": np.clip(
+                        (0.15 if driver_type=="safe" else 0.35 if driver_type=="moderate" else 0.6)
+                        + RNG.normal(0,0.08), 0, 1
+                    ),
+                    "driver_type": driver_type,
                     TARGET_COLUMN: risk,
                 }
             )

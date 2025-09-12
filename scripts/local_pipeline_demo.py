@@ -29,20 +29,35 @@ This is a diagnostic / smoke-test harness and not optimized for performance.
 from __future__ import annotations
 
 import argparse
-import json
+import json as _json
 import os
+import signal
 from pathlib import Path
 from typing import List, Dict, Any
+import sys
 
-LOG_PATH = Path("local_pipeline_demo.log")
+# Ensure project root (one level up from scripts/) is on sys.path so 'data', 'models', 'src' are importable
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+DEFAULT_LOG_PATH = Path("local_pipeline_demo.log")
+LOG_PATH = DEFAULT_LOG_PATH
 
 def log(msg: str) -> None:
-    print(msg, flush=True)
+    """Print and append to log. If stdout pipe closed, still continue file logging for rest of run."""
+    global LOG_PATH
+    try:
+        print(msg, flush=True)
+    except BrokenPipeError:
+        # Do not return; continue to file so metrics persist
+        pass
     try:
         with LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(msg + "\n")
     except OSError:
-        return
+        pass
 
 # --- Import project modules ---
 from data.mock import TelemetryGenerator, GeneratorConfig
@@ -76,10 +91,9 @@ def run_validation(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if result.invalid_count:
         log(f"Validation: {result.invalid_count} invalid events (showing first 3 error sets)")
         for err in result.errors[:3]:
-            log(json.dumps(err, indent=2))
+            log(_json.dumps(err, indent=2))
     log(f"Validation: {result.valid_count} valid / {result.invalid_count} invalid")
     return valid
-
 
 def aggregate(valid_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     feats = aggregate_features(valid_events)
@@ -99,10 +113,8 @@ def ensure_model(model_dir: Path, force_retrain: bool = False) -> ModelArtifacts
     artifacts, metrics = train_model(df, params=None, validation_size=0.2, early_stopping_rounds=10, num_boost_round=120)
     model_dir.mkdir(parents=True, exist_ok=True)
     artifacts.save(model_dir)
-    log("Trained model metrics:" + json.dumps(metrics, indent=2))
+    log("Trained model metrics:" + _json.dumps(metrics, indent=2))
     return artifacts
-
-
 def score(model: ModelArtifacts, feature_rows: List[Dict[str, Any]]) -> pd.DataFrame:
     if not feature_rows:
         return pd.DataFrame()
@@ -129,6 +141,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--extreme-pairs", type=int, default=1, help="How many low/high extreme row pairs to inject (requires --inject-extremes)")
     p.add_argument("--extreme-variance", action="store_true", help="Enable generator risk profiles for wider raw event variance (data/mock.py)")
     p.add_argument("--force-retrain", action="store_true", help="Ignore existing model artifacts and retrain (useful after model sensitivity changes)")
+    p.add_argument("--debug-driver-sample", type=int, default=5, help="Number of original (non-injected) driver rows to print with detailed feature + pricing breakdown")
+    p.add_argument("--premium-target-spread", type=float, help="Override PREMIUM_SCALING_TARGET_SPREAD env for dynamic premium scaling (e.g. 0.45)")
+    p.add_argument("--log-file", type=str, help="Custom log file path (default local_pipeline_demo.log)")
     return p.parse_args()
 
 
@@ -137,12 +152,21 @@ def maybe_dump(path: str | None, rows: List[Dict[str, Any]]) -> None:
         return
     with open(path, "w", encoding="utf-8") as f:
         for r in rows:
-            f.write(json.dumps(r) + "\n")
+            f.write(_json.dumps(r) + "\n")
     print(f"Wrote {len(rows)} rows to {path}")
 
 
 def main() -> None:
     args = parse_args()
+    # Configure log file override
+    global LOG_PATH
+    if args.log_file:
+        LOG_PATH = Path(args.log_file)
+    # Ignore SIGPIPE so native libs won't kill process; BrokenPipe handled in log()
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except (AttributeError, ValueError):
+        pass
     model_dir = Path(args.model_artifacts)
     log("[local_pipeline_demo] Starting pipeline")
 
@@ -164,6 +188,9 @@ def main() -> None:
 
     # 4. Model ensure
     model = ensure_model(model_dir, force_retrain=args.force_retrain)
+    # If user wants to override target spread for dynamic premium scaling, set env before scoring
+    if args.premium_target_spread:
+        os.environ["PREMIUM_SCALING_TARGET_SPREAD"] = str(args.premium_target_spread)
 
     # Optional: Inject extreme low/high risk rows AFTER model is ready so we can adaptively scale
     if args.inject_extremes:
@@ -250,6 +277,20 @@ def main() -> None:
 
     log("\nSummary stats (premium_multiplier):")
     log(str(scored["premium_multiplier"].describe()))
+    # Log model distribution stats and computed scaling factor if available
+    try:
+        meta_path = os.path.join(model_dir, 'meta.json')
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            meta = _json.load(f)
+        dist = meta.get('dist_stats', {}) or {}
+        p5 = dist.get("pred_p5"); p95 = dist.get("pred_p95")
+        tgt = os.environ.get("PREMIUM_SCALING_TARGET_SPREAD", "default")
+        if p5 is not None and p95 is not None:
+            spread = p95 - p5
+            scaling_factor = (float(tgt) if tgt != "default" else 0.35) / spread if spread and spread > 1e-6 else float('nan')
+            log(f"Distribution stats: p5={p5:.4f}, p95={p95:.4f}, spread={spread:.4f}, target={tgt}, derived_scaling_factor≈{scaling_factor:.4f}")
+    except (FileNotFoundError, _json.JSONDecodeError):
+        pass
 
     # 6. Pricing Engine Integration
     # Ensure pricing engine points at same artifacts directory
@@ -282,6 +323,19 @@ def main() -> None:
     if "pricing.final_multiplier" in priced_df.columns:
         log("\nSummary stats (final_multiplier):")
         log(str(priced_df["pricing.final_multiplier"].describe()))
+
+    # Detailed debug for first N original (non-injected) drivers
+    if args.debug_driver_sample > 0:
+        base_mask = ~priced_df['driver_id'].str.startswith('DEXTR_') if 'driver_id' in priced_df.columns else [True] * len(priced_df)
+        base_sample = priced_df[base_mask].head(args.debug_driver_sample)
+        if not base_sample.empty:
+            cols_show = [c for c in [
+                'driver_id','period_key','miles','hard_braking_events_per_100mi','aggressive_turning_events_per_100mi',
+                'tailgating_time_ratio','speeding_minutes_per_100mi','late_night_miles_per_100mi','prior_claim_count',
+                'car_value','car_sportiness','risk_score','model_premium_multiplier','pricing.final_multiplier','pricing.final_monthly_premium'
+            ] if c in base_sample.columns]
+            log("\nDebug driver sample (original drivers):")
+            log(base_sample[cols_show].to_string(index=False))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -211,6 +211,42 @@ class TelemetryGenerator:
         self.rng = random.Random(config.seed)
         self._driver_state: Dict[str, Dict[str, Any]] = {}
         self._driver_profile: Dict[str, str] = {}
+        self._driver_car: Dict[str, Dict[str, Any]] = {}
+
+    def _assign_car(self, driver_id: str) -> Dict[str, Any]:
+        """Assign static car attributes per driver (value & sportiness).
+
+        car_value: approximate replacement cost (USD) drawn log-normal by category.
+        car_sportiness: 0-1 scale capturing performance/driver risk appetite proxy.
+        car_type: categorical label for future embedding / analysis.
+        """
+        car = self._driver_car.get(driver_id)
+        if car:
+            return car
+        # simple categorical distribution
+        car_types = [
+            ("economy", 0.30, 18_000, 0.15),
+            ("sedan", 0.35, 28_000, 0.25),
+            ("suv", 0.18, 40_000, 0.30),
+            ("luxury", 0.10, 65_000, 0.40),
+            ("sports", 0.05, 85_000, 0.70),
+            ("super", 0.02, 140_000, 0.90),
+        ]
+        r = self.rng.random()
+        acc = 0.0
+        chosen = car_types[-1]
+        for ct, w, base_val, sport in car_types:
+            acc += w
+            if r <= acc:
+                chosen = (ct, w, base_val, sport)
+                break
+        ct, _w, base_val, sport = chosen
+        # value variation: +/- 20% noise log-normal-ish
+        value = int(base_val * self.rng.uniform(0.85, 1.25))
+        car = {"car_type": ct, "car_value": value, "car_sportiness": round(sport + self.rng.uniform(-0.05, 0.05), 3)}
+        car["car_sportiness"] = float(min(1.0, max(0.0, car["car_sportiness"])) )
+        self._driver_car[driver_id] = car
+        return car
 
     def _assign_profile(self, driver_id: str) -> str:
         if not self.cfg.extreme_variance:
@@ -318,6 +354,8 @@ class TelemetryGenerator:
                     "heading_deg": self.rng.randint(0, 359),
                     "period_minute": current_minute,
                 }
+                # attach static car attributes once per driver
+                evt.update(self._assign_car(driver_id))
                 evt.update(spec.attribute_fn(self.rng))
                 if self.cfg.extreme_variance:
                     # Amplify / dampen type-specific intensities for extremes

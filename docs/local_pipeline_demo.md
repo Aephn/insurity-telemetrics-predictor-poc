@@ -27,6 +27,19 @@ PYTHONPATH=. python scripts/local_pipeline_demo.py \
   --dump-features feature_rows.jsonl
 ```
 
+If running evals including stronger variance in test data:
+
+```bash
+ PYTHONPATH=. python scripts/local_pipeline_demo.py \
+ --events 1200 \
+ --drivers 12 \
+ --model-artifacts artifacts \
+ --force-retrain \
+ --extreme-variance \
+ --inject-extremes \
+ --extreme-pairs 2 > run_output.log 2>&1; tail -n 80 run_output.log
+```
+
 ### Arguments
 | Flag | Default | Description |
 |------|---------|-------------|

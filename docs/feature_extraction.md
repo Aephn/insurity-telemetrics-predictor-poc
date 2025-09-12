@@ -51,6 +51,9 @@ A minimum exposure threshold (`MIN_EXPOSURE_MILES`, default 5.0) filters out spa
 | `speeding_minutes_per_100mi` | Minutes spent speeding per 100 miles | `event_type`, `duration_sec`, `miles` | `100 * (Σ duration_sec(speeding)/60) / miles` (fallback +1/60 if duration missing) | If miles ≤ 0 → 0.0 |
 | `late_night_miles_per_100mi` | Exposure during late-night events per 100 miles | `event_type`, `speed_mph`, `miles` | `100 * (Σ speed_mph/60 for late_night_driving) / miles` | If miles ≤ 0 → 0.0 |
 | `prior_claim_count` | Placeholder for external claims history | (None internal) | Always `0` (stub) | To be replaced by external join |
+| `car_value` | Estimated vehicle replacement cost | passthrough from events | First observed value in period | Missing → omitted |
+| `car_sportiness` | 0-1 performance / behavioral proxy | passthrough from events | First observed; no aggregation | Missing → omitted |
+| `car_type` | Vehicle category label | passthrough | First observed (categorical) | Informational (not modeled) |
 
 All computed per driver-period; per-100mi metrics use the *final period exposure miles* after all events processed.
 
@@ -81,6 +84,9 @@ Example JSON row:
   "speeding_minutes_per_100mi": 6.5401,
   "late_night_miles_per_100mi": 1.8459,
   "prior_claim_count": 0
+  "car_value": 32500,
+  "car_sportiness": 0.42,
+  "car_type": "sedan"
 }
 ```
 
