@@ -23,7 +23,12 @@ except Exception:  # pragma: no cover
     boto3 = None  # type: ignore
     BotoCoreError = ClientError = Exception  # type: ignore
 
-from .features.registry import load_feature_calculators
+try:
+    # When deployed, the code might be placed at the root of the Lambda zip (no package parent),
+    # so relative import `.features` can fail. Prefer absolute import fallback.
+    from features.registry import load_feature_calculators  # type: ignore
+except Exception:  # pragma: no cover
+    from .features.registry import load_feature_calculators  # type: ignore
 
 FEATURES_STREAM = os.getenv("FEATURES_STREAM_NAME")
 PK_FIELD = os.getenv("FEATURES_PARTITION_KEY_FIELD", "driver_id")
