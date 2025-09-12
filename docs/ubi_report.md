@@ -19,15 +19,6 @@ Acts as an integration smoke test and a reproducible way to sanity‑check featu
 ## Run It
 From the project root (ensure the root is on `PYTHONPATH` so packages resolve):
 
-```bash
-PYTHONPATH=. python scripts/local_pipeline_demo.py \
-  --events 3000 \
-  --drivers 10 \
-  --model-artifacts artifacts \
-  --dump-events validated_events.jsonl \
-  --dump-features feature_rows.jsonl
-```
-
 If running evals including stronger variance in test data:
 
 ```bash
@@ -40,6 +31,16 @@ If running evals including stronger variance in test data:
  --inject-extremes \
  --extreme-pairs 2 > run_output.log 2>&1; tail -n 80 run_output.log
 ```
+
+Running Evals:
+```bash
+python scripts/ubi_report.py \
+--model-dir artifacts \
+--drivers 300 \
+--periods 6 > artifacts/ubi_run.log 2>&1; \
+grep -i 'ubi_report' artifacts/ubi_run.log || tail -n 60 artifacts/ubi_run.log
+```
+
 
 ### Arguments
 | Flag | Default | Description |
