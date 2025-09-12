@@ -6,7 +6,7 @@ export function Layout({ children }: PropsWithChildren) {
       <Header />
       <main style={{ width: '100%', maxWidth: 1440, margin: '0 auto', padding: '1.25rem', flex: 1 }}>{children}</main>
       <footer style={{ textAlign: 'center', fontSize: 12, padding: '0.75rem', opacity: 0.6 }}>
-        Telematics Insurance Dashboard (Simulation) &copy; {new Date().getFullYear()}
+        TelemetryInsure (Simulation) &copy; {new Date().getFullYear()}
       </footer>
     </div>
   );
@@ -15,7 +15,7 @@ export function Layout({ children }: PropsWithChildren) {
 function Header() {
   return (
     <header style={{ backdropFilter: 'blur(8px)', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid #222', padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center' }}>
-      <span style={{ fontWeight: 600, letterSpacing: '.5px' }}>Usage-Based Insurance Dashboard</span>
+      <span style={{ fontWeight: 600, letterSpacing: '.5px', fontSize: 16 }}>TelemetryInsure</span>
     </header>
   );
 }

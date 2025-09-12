@@ -11,6 +11,8 @@ export interface MonthlyScore {
   safetyScore: number; // 0-100
   premium: number; // USD
   miles: number;
+  riskScore?: number; // model raw risk (0-1)
+  modelMultiplier?: number; // model suggested multiplier
   factors: SafetyFactors;
 }
 
@@ -42,4 +44,5 @@ export interface DashboardData {
   history: MonthlyScore[];
   recentEvents: DrivingEvent[];
   projections: PremiumProjectionPoint[];
+  currentFactors?: SafetyFactors; // convenience copy of latest factors
 }

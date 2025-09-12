@@ -9,7 +9,7 @@ export function PremiumSummary({ history }: Props) {
   const pct = prev ? (delta / prev.premium) * 100 : 0;
   return (
     <div style={card} id="premiums">
-      <h2 style={h2}>Current Premium</h2>
+  <h2 style={h2}>Current Monthly Premium</h2>
       <div style={{ fontSize: 42, fontWeight: 600 }}>${latest.premium.toFixed(2)}</div>
       <div style={{ fontSize: 14, opacity: 0.8 }}>Safety Score: <strong>{latest.safetyScore}</strong></div>
       <div style={{ fontSize: 13, marginTop: 8, color: delta <= 0 ? '#5dd39e' : '#ff9f66' }}>

@@ -28,8 +28,25 @@ const seedHistory: MonthlyScore[] = (() => {
 let recentEvents: DrivingEvent[] = [];
 
 export async function fetchDashboard(): Promise<DashboardData> {
-  // simulate latency
-  await new Promise(r => setTimeout(r, 250));
+  const hosts = ['localhost', '127.0.0.1'];
+  for (const h of hosts) {
+    try {
+      const url = `http://${h}:8787/api/dashboard`;
+      const resp = await fetch(url, { method: 'GET', cache: 'no-store' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.profile?.name) {
+          (window as any).__DASHBOARD_MODE__ = 'backend';
+          return data as DashboardData;
+        }
+      }
+    } catch (err) {
+      // continue to next host
+    }
+  }
+
+  // fallback simulation (original logic)
+  await new Promise(r => setTimeout(r, 150));
   const profile = {
     id: 'driver-001',
     name: 'Test Driver',
@@ -37,11 +54,9 @@ export async function fetchDashboard(): Promise<DashboardData> {
     basePremium: 120,
     currentMonth: new Date().toISOString().slice(0,7)
   };
-  // current month synthetic premium derived from factors average of events so far
   const currentFactors = aggregateCurrentFactors();
   const currentScore = computeSafetyScore(currentFactors);
   const currentPremium = +(profile.basePremium * (1 + (70 - currentScore) / 300)).toFixed(2);
-
   const extendedHistory: MonthlyScore[] = [...seedHistory.filter(h => h.month !== profile.currentMonth), {
     month: profile.currentMonth,
     safetyScore: currentScore,
@@ -49,7 +64,6 @@ export async function fetchDashboard(): Promise<DashboardData> {
     miles: 0,
     factors: currentFactors
   }];
-
   const projections: PremiumProjectionPoint[] = new Array(3).fill(0).map((_, i) => {
     const dt = new Date();
     dt.setMonth(dt.getMonth() + i + 1);
@@ -57,7 +71,7 @@ export async function fetchDashboard(): Promise<DashboardData> {
     const projectedPremium = +(profile.basePremium * (1 + (70 - simulatedScore) / 300)).toFixed(2);
     return { date: dt.toISOString().slice(0,10), projectedPremium };
   });
-
+  (window as any).__DASHBOARD_MODE__ = 'simulation';
   return { profile, history: extendedHistory, recentEvents, projections };
 }
 

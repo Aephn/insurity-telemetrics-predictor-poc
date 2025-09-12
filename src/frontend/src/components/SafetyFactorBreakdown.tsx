@@ -6,7 +6,7 @@ interface Props { factors: SafetyFactors; safetyScore: number; }
 export function SafetyFactorBreakdown({ factors, safetyScore }: Props) {
   return (
     <div style={card} id="safety">
-      <h2 style={h2}>Safety Factors</h2>
+  <h2 style={h2}>Safety Events</h2>
       <div style={{ display: 'grid', gap: '0.6rem', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))' }}>
         {Object.entries(factors).map(([k, v]) => (
           <FactorPill key={k} label={factorLabel(k as keyof SafetyFactors)} value={v} />

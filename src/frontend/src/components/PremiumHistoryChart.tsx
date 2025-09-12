@@ -11,7 +11,14 @@ export function PremiumHistoryChart({ history }: Props) {
         <ResponsiveContainer>
           <LineChart data={history} margin={{ left: 8, right: 16, top: 10, bottom: 4 }}>
             <CartesianGrid stroke="#1f242b" />
-            <XAxis dataKey="month" stroke="#6b7682" />
+            <XAxis dataKey="month" stroke="#6b7682" tickFormatter={(v: string) => {
+              // Expect YYYY-MM; fallback to original if unexpected
+              if (typeof v === 'string' && v.length === 7 && v.includes('-')) {
+                const [y, m] = v.split('-');
+                return `${m}/${y.slice(-2)}`;
+              }
+              return v;
+            }} />
             <YAxis yAxisId="left" stroke="#6b7682" />
             <YAxis yAxisId="right" orientation="right" stroke="#6b7682" domain={[0,100]} />
             <Tooltip contentStyle={{ background:'#14181d', border:'1px solid #2a323a', borderRadius:8 }} />
