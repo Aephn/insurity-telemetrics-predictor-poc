@@ -243,18 +243,10 @@ resource "aws_api_gateway_integration_response" "options_200" {
   }
 }
 
-resource "aws_api_gateway_deployment" "validation" {
-  depends_on = [aws_api_gateway_integration.post_validate_integration]
-  rest_api_id = aws_api_gateway_rest_api.validation.id
-  triggers = {
-    redeploy = sha1(jsonencode(aws_api_gateway_rest_api.validation.body))
-  }
-}
-
 resource "aws_api_gateway_stage" "validation" {
-  rest_api_id  = aws_api_gateway_rest_api.validation.id
+  rest_api_id   = aws_api_gateway_rest_api.validation.id
   deployment_id = aws_api_gateway_deployment.validation.id
-  stage_name   = var.env
+  stage_name    = var.env
 }
 
 output "validate_endpoint" {
@@ -272,3 +264,141 @@ output "validation_lambda_name" {
 output "feature_lambda_name" {
   value = aws_lambda_function.feature_extraction.function_name
 }
+
+# Additional API resources mapping to same validation lambda for different synthetic event types
+resource "aws_api_gateway_resource" "telemetry" {
+  rest_api_id = aws_api_gateway_rest_api.validation.id
+  parent_id   = aws_api_gateway_rest_api.validation.root_resource_id
+  path_part   = "telemetry"
+}
+resource "aws_api_gateway_method" "post_telem" {
+  rest_api_id   = aws_api_gateway_rest_api.validation.id
+  resource_id   = aws_api_gateway_resource.telemetry.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+resource "aws_api_gateway_integration" "post_telem_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.validation.id
+  resource_id             = aws_api_gateway_resource.telemetry.id
+  http_method             = aws_api_gateway_method.post_telem.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.validation.invoke_arn
+}
+resource "aws_lambda_permission" "apigw_invoke_validation_telem" {
+  statement_id  = "AllowAPIGatewayInvokeValidationTelem"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.validation.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.validation.execution_arn}/*/POST/telemetry"
+}
+
+resource "aws_api_gateway_resource" "status" {
+  rest_api_id = aws_api_gateway_rest_api.validation.id
+  parent_id   = aws_api_gateway_rest_api.validation.root_resource_id
+  path_part   = "status"
+}
+resource "aws_api_gateway_method" "post_status" {
+  rest_api_id   = aws_api_gateway_rest_api.validation.id
+  resource_id   = aws_api_gateway_resource.status.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+resource "aws_api_gateway_integration" "post_status_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.validation.id
+  resource_id             = aws_api_gateway_resource.status.id
+  http_method             = aws_api_gateway_method.post_status.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.validation.invoke_arn
+}
+resource "aws_lambda_permission" "apigw_invoke_validation_status" {
+  statement_id  = "AllowAPIGatewayInvokeValidationStatus"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.validation.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.validation.execution_arn}/*/POST/status"
+}
+
+resource "aws_api_gateway_resource" "location" {
+  rest_api_id = aws_api_gateway_rest_api.validation.id
+  parent_id   = aws_api_gateway_rest_api.validation.root_resource_id
+  path_part   = "location"
+}
+resource "aws_api_gateway_method" "post_location" {
+  rest_api_id   = aws_api_gateway_rest_api.validation.id
+  resource_id   = aws_api_gateway_resource.location.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+resource "aws_api_gateway_integration" "post_location_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.validation.id
+  resource_id             = aws_api_gateway_resource.location.id
+  http_method             = aws_api_gateway_method.post_location.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.validation.invoke_arn
+}
+resource "aws_lambda_permission" "apigw_invoke_validation_location" {
+  statement_id  = "AllowAPIGatewayInvokeValidationLocation"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.validation.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.validation.execution_arn}/*/POST/location"
+}
+
+resource "aws_api_gateway_resource" "trips" {
+  rest_api_id = aws_api_gateway_rest_api.validation.id
+  parent_id   = aws_api_gateway_rest_api.validation.root_resource_id
+  path_part   = "trips"
+}
+resource "aws_api_gateway_method" "post_trips" {
+  rest_api_id   = aws_api_gateway_rest_api.validation.id
+  resource_id   = aws_api_gateway_resource.trips.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+resource "aws_api_gateway_integration" "post_trips_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.validation.id
+  resource_id             = aws_api_gateway_resource.trips.id
+  http_method             = aws_api_gateway_method.post_trips.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.validation.invoke_arn
+}
+resource "aws_lambda_permission" "apigw_invoke_validation_trips" {
+  statement_id  = "AllowAPIGatewayInvokeValidationTrips"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.validation.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.validation.execution_arn}/*/POST/trips"
+}
+
+# Update deployment to depend on all integrations so redeploy occurs properly
+resource "aws_api_gateway_deployment" "validation" {
+  depends_on = [
+    aws_api_gateway_integration.post_validate_integration,
+    aws_api_gateway_integration.post_telem_integration,
+    aws_api_gateway_integration.post_status_integration,
+    aws_api_gateway_integration.post_location_integration,
+    aws_api_gateway_integration.post_trips_integration
+  ]
+  rest_api_id = aws_api_gateway_rest_api.validation.id
+  triggers = {
+    redeploy = sha1(jsonencode({
+      body        = aws_api_gateway_rest_api.validation.body
+      integrations = [
+        aws_api_gateway_integration.post_validate_integration.uri,
+        aws_api_gateway_integration.post_telem_integration.uri,
+        aws_api_gateway_integration.post_status_integration.uri,
+        aws_api_gateway_integration.post_location_integration.uri,
+        aws_api_gateway_integration.post_trips_integration.uri
+      ]
+    }))
+  }
+}
+
+output "telemetry_endpoint" { value = "https://${aws_api_gateway_rest_api.validation.id}.execute-api.${var.region}.amazonaws.com/${var.env}/telemetry" }
+output "status_endpoint"    { value = "https://${aws_api_gateway_rest_api.validation.id}.execute-api.${var.region}.amazonaws.com/${var.env}/status" }
+output "location_endpoint"  { value = "https://${aws_api_gateway_rest_api.validation.id}.execute-api.${var.region}.amazonaws.com/${var.env}/location" }
+output "trips_endpoint"     { value = "https://${aws_api_gateway_rest_api.validation.id}.execute-api.${var.region}.amazonaws.com/${var.env}/trips" }
