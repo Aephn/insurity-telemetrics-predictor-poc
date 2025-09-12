@@ -44,6 +44,17 @@ npm run build
 npm run preview
 ```
 
+### Quick Start (Backend)
+
+NOTE: Ensure that you have a provisioned AWS IAM User that is allowed to provision the following services (AWS Kinesis, AWS Lambda, AWS S3 Bucket, AWS DynamoDB)
+
+
+1. build tf script...
+2. run tf script...
+3. link sagemaker...
+
+
+
 ### Architecture Notes
 
 | Layer | Purpose | Status |
@@ -62,23 +73,6 @@ npm run preview
 2. Use statistically validated / ML model (e.g., Gradient Boosted Trees, GLM, or hybrid deep feature extractor feeding a calibrated regressor).
 3. Include confidence intervals or explainability artifacts.
 
-### Extending This Prototype
-
-1. Backend API (REST / GraphQL) endpoint examples:
-	 - `GET /driver/{id}/dashboard` → current premium, safety factors, history
-	 - `GET /driver/{id}/events?since=...` → incremental event polling (or WebSocket stream)
-	 - `POST /telematics/ingest` → secure ingestion of raw events
-2. Replace `startEventStream` with real WebSocket.
-3. Persist historical monthly aggregates in a warehouse (e.g., Snowflake, BigQuery) and expose via a caching layer.
-4. Swap toy scoring with a model service (FastAPI / gRPC) returning versioned score + reason codes.
-5. Add authentication (OIDC) & per-policy RBAC.
-6. Harden privacy: pseudonymize driver identifiers & consider differential privacy where appropriate.
-
-### Data & Models
-
-`/models` can store model weights or pointers. None committed yet.
-
-`/data` may contain small anonymized samples (currently empty) for local experimentation. Avoid committing raw PII / VIN / GPS traces.
 
 ### Repository Structure
 
@@ -91,23 +85,6 @@ docs/                  # Design notes, diagrams, research
 bin/                   # Utility scripts
 ```
 
-### Evaluation Guidance
-
-Focus areas for future completeness:
-
-- Model selection transparency & statistical validation
-- Latency & freshness of risk updates
-- Cost efficiency of data pipeline
-- User behavior change (score uplift over time)
-
-### Next Steps (Suggested Roadmap)
-
-1. Define backend domain models & schemas (Driver, Trip, Event, MonthlyAggregate, PolicyPricingRevision).
-2. Implement ingestion API & streaming pipeline (Kafka / Kinesis) → feature store.
-3. Train baseline risk model (e.g., LightGBM) with synthetic dataset; track in MLflow.
-4. Add WebSocket events -> live frontend updates.
-5. Implement badge logic from real KPIs.
-6. Add unit/integration tests & CI pipeline.
 
 ---
 
