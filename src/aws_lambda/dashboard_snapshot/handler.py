@@ -106,7 +106,7 @@ def generate_snapshot() -> Dict[str, Any]:
 
     profile = {
         "id": driver_id,
-        "name": "Alex Driver",
+        "name": "Harrison Lin",
         "policyNumber": "POLICY-"+ driver_id[-4:],
         "basePremium": 110,
         "currentMonth": monthly_scores[-1]["month"],
