@@ -1,5 +1,4 @@
 import { DashboardData, DrivingEvent, MonthlyScore, PremiumProjectionPoint } from '../types';
-import { generateSimulatedEvent } from '../utils/sim';
 import { computeSafetyScore } from '../utils/scoring';
 
 // In a real app replace with fetch calls & auth tokens.
@@ -37,6 +36,10 @@ export async function fetchDashboard(): Promise<DashboardData> {
         const data = await resp.json();
         if (data?.profile?.name) {
           (window as any).__DASHBOARD_MODE__ = 'backend';
+          // Ensure events are sorted descending by timestamp (latest first)
+          if (Array.isArray(data.recentEvents)) {
+            data.recentEvents.sort((a: DrivingEvent, b: DrivingEvent) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          }
           return data as DashboardData;
         }
       }
@@ -76,6 +79,10 @@ export async function fetchDashboard(): Promise<DashboardData> {
 }
 
 export function startEventStream(callback: (event: DrivingEvent) => void) {
+  // Only simulate events in simulation mode
+  if ((window as any).__DASHBOARD_MODE__ !== 'simulation') {
+    return () => {};
+  }
   const interval = setInterval(() => {
     const evt = generateSimulatedEvent();
     recentEvents = [evt, ...recentEvents].slice(0, 100);

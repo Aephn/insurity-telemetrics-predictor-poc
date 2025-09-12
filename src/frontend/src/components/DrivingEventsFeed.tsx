@@ -8,7 +8,7 @@ export function DrivingEventsFeed({ events }: Props) {
     <div style={card} id="events">
       <h2 style={h2}>Recent Driving Events</h2>
   <div className="events-scroll" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto', paddingRight: 4 }}>
-        {events.length === 0 && <div style={{ fontSize: 13, opacity: 0.6 }}>No events yet. Streaming simulation will populate soon.</div>}
+        {events.length === 0 && <div style={{ fontSize: 13, opacity: 0.6 }}>No recent events.</div>}
         {events.map(e => <Row key={e.id} evt={e} />)}
       </div>
     </div>

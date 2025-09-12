@@ -16,6 +16,10 @@ export function useDashboardData() {
           if (!cancel) {
             const m = (window as any).__DASHBOARD_MODE__;
             console.log('[dashboard] fetched', m, d.profile?.name);
+            // Ensure descending order of events
+            if (Array.isArray(d.recentEvents)) {
+              d.recentEvents = [...d.recentEvents].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            }
             setData(d); setMode(m); setLoading(false);
           }
         })
@@ -28,10 +32,14 @@ export function useDashboardData() {
 
   useEffect(() => {
     if (!data) return;
+    const m = (window as any).__DASHBOARD_MODE__;
     const stop = startEventStream((evt: DrivingEvent) => {
-      setData((prev: DashboardData | null) => prev ? { ...prev, recentEvents: [evt, ...prev.recentEvents].slice(0, 100) } : prev);
+      setData((prev: DashboardData | null) => prev ? {
+        ...prev,
+        recentEvents: [evt, ...prev.recentEvents].slice(0, 100)
+      } : prev);
     });
-    return stop;
+    return () => { if (m === 'simulation') stop(); };
   }, [data]);
 
   const refresh = () => { setLoading(true); fetchDashboard().then(d => { const m = (window as any).__DASHBOARD_MODE__; setData(d); setMode(m); setLoading(false); }); };
