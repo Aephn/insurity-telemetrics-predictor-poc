@@ -10,6 +10,8 @@ Implements transformation of driver-period features + model outputs into a final
 5. Combine & cap to obtain `final_multiplier`.
 6. Multiply by base premium; enforce min/max bounds.
 
+Note: Static vehicle features (`car_value`, `car_sportiness`) currently influence pricing only indirectly through the model’s `risk_score` (no direct tier adjustments yet). Future severity-oriented tiers may incorporate normalized `car_value` once calibrated.
+
 ## Environment Variables
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -115,8 +115,9 @@ FEATURE_COLUMNS = [
     "late_night_miles_per_100mi",
     "miles",
     "prior_claim_count",
-    "car_value",
+    "car_value_norm",
     "car_sportiness",
+    "car_speeding_interaction",
 ]
 TARGET_COLUMN = "target_risk"
 
@@ -173,14 +174,10 @@ def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.Da
 
     for d in range(n_drivers):
         driver_id = f"D{d:05d}"
-
-        # Assign driver type
-        driver_type = RNG.choice(
-            list(driver_types.keys()), p=[0.7, 0.2, 0.1]
-        )  # Most drivers are safe
+        driver_type = RNG.choice(list(driver_types.keys()), p=[0.7, 0.2, 0.1])
         base_risk = driver_types[driver_type]["base_risk"]
-
-        prior_claims = RNG.poisson(base_risk * 2)  # Claims correlated with risk
+        # Constrain prior claims to 0-3 for clearer premium differentiation
+        prior_claims = int(min(3, RNG.poisson(base_risk * 2)))
 
         for p in range(periods):
             # Generate features based on driver type
@@ -207,30 +204,45 @@ def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.Da
 
             # More sophisticated risk calculation:
             # Emphasize speeding more strongly & add convex penalty for very high speeding.
-            tailgating_effect = tailgating_ratio * 2.0  # strong effect
-            speed_braking_interaction = (speeding_minutes / 10) * (hard_braking / 5) * 0.6
-            speeding_linear = 0.10 * speeding_minutes  # increased from 0.04
-            speeding_convex = 0.02 * (speeding_minutes ** 2 / 100.0)  # grows faster at extremes
+            tailgating_effect = tailgating_ratio * 1.6  # slightly reduced
+            speed_braking_interaction = (speeding_minutes / 12) * (hard_braking / 6) * 0.5
+            speeding_linear = 0.075 * speeding_minutes  # lower linear weight to reduce overall mean
+            speeding_convex = 0.015 * (speeding_minutes ** 2 / 110.0)
+
+            # Car value severity proxy (normalized later) influences baseline shift
+            # Raw car value draw for this synthetic training row (mirrors later raw normalization logic)
+            raw_car_value = RNG.normal(35000, 12000) if driver_type != "risky" else RNG.normal(45000,15000)
+            car_value_norm_tmp = max(0.0, raw_car_value / 10000.0)
 
             linear_risk = (
                 tailgating_effect
-                + 0.08 * hard_braking
-                + 0.06 * aggressive_turns
+                + 0.06 * hard_braking
+                + 0.05 * aggressive_turns
                 + speeding_linear
                 + speeding_convex
-                + 0.03 * late_night_miles
-                + 0.02 * prior_claims
+                + 0.02 * late_night_miles
+                + 0.20 * prior_claims  # amplify claim impact
+                + 0.10 * car_value_norm_tmp  # severity component
                 + speed_braking_interaction
             )
 
             # Add temporal effects (seasonal patterns)
-            seasonal_factor = 1 + 0.1 * np.sin(2 * np.pi * p / 12)  # Winter risk increase
+            seasonal_factor = 1 + 0.08 * np.sin(2 * np.pi * p / 12)
 
-            noise = RNG.normal(0, 0.07)
-            # Shift logistic center slightly lower (0.9) to widen mid-range gradients
-            risk = base_risk + (1 / (1 + np.exp(-(linear_risk + noise - 0.9)))) * seasonal_factor
-            risk = np.clip(risk, 0.01, 0.99)  # Keep in reasonable bounds
+            noise = RNG.normal(0, 0.05)
+            # Recenter toward 0.5 overall: decrease base offset and push logistic center right.
+            # Keep claim & car value influence meaningful but not dominating overall mean.
+            # Previous config produced ~0.77 mean; this aims for ~0.50.
+            risk = 0.08 + (1 / (1 + np.exp(-(linear_risk + noise - 1.45)))) * seasonal_factor
+            risk = np.clip(risk, 0.01, 0.99)
 
+            # raw_car_value already computed above for linear_risk; reuse
+            car_sportiness = np.clip(
+                (0.15 if driver_type=="safe" else 0.35 if driver_type=="moderate" else 0.6)
+                + RNG.normal(0,0.08), 0, 1
+            )
+            car_value_norm = raw_car_value / 10000.0  # normalization for model stability
+            car_speeding_interaction = car_sportiness * speeding_minutes
             rows.append(
                 {
                     "driver_id": driver_id,
@@ -243,12 +255,10 @@ def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.Da
                     "late_night_miles_per_100mi": late_night_miles,
                     "miles": miles,
                     "prior_claim_count": prior_claims,
-                    # synthetic car attributes (positive correlation with risk via severity & behavior)
-                    "car_value": RNG.normal(35000, 12000) if driver_type != "risky" else RNG.normal(45000,15000),
-                    "car_sportiness": np.clip(
-                        (0.15 if driver_type=="safe" else 0.35 if driver_type=="moderate" else 0.6)
-                        + RNG.normal(0,0.08), 0, 1
-                    ),
+                    "car_value_raw": raw_car_value,
+                    "car_value_norm": car_value_norm,
+                    "car_sportiness": car_sportiness,
+                    "car_speeding_interaction": car_speeding_interaction,
                     "driver_type": driver_type,
                     TARGET_COLUMN: risk,
                 }

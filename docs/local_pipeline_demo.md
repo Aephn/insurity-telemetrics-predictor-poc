@@ -7,6 +7,7 @@ It stitches together the existing components without AWS infrastructure:
 2. Pydantic validation (`src/aws_lambda/validation/handler.validate_events`)
 3. Feature aggregation (`src/aws_lambda/feature_extraction/handler._aggregate`)
 4. Model loading / (on-demand) training + scoring (`models/aws_sagemaker/xgboost_model.py`)
+5. Premium mapping (dynamic scaling) & pricing engine adjustments
 
 ## Why This Exists
 Acts as an integration smoke test and a reproducible way to sanity‑check feature / model drift during development without provisioning streams or Lambdas.
@@ -53,6 +54,9 @@ If running evals including stronger variance in test data:
 | `--inject-extremes` | off | Post-aggregation injection of adaptive low/high synthetic rows (guarantee a target spread) |
 | `--extreme-pairs` | 1 | Number of injected low/high pairs when `--inject-extremes` is set |
 | `--extreme-variance` | off | Enable generator driver risk profiles + amplified intensities for organic wider variance |
+| `--debug-driver-sample` | 0 | If >0 prints a filtered subset of non-injected driver rows for inspection |
+| `--premium-target-spread` | None | Override dynamic pricing spread (TARGET_SPREAD) at runtime |
+| `--log-file` | None | Write full log (stdout may be truncated if piped) |
 
 ## What It Outputs
 - Console / log file `local_pipeline_demo.log` lines describing each stage.
@@ -64,13 +68,14 @@ If running evals including stronger variance in test data:
 | Field | Meaning (Prototype) | Typical Range | Notes |
 |-------|---------------------|---------------|-------|
 | `risk_score` | Relative latent risk (synthetic, 0–1 clipped) | ~0.18–0.75 center, tails 0.01–0.99 | Not calibrated probability yet |
-| `premium_multiplier` | Linear scaling around baseline mean risk using k=0.25 | ~0.94–1.09 (example) | Adjust base premium: `final = base * multiplier` |
+| `premium_multiplier` | Dynamic scaling around baseline mean risk using training distribution percentiles | Spread target default 0.35 | Adaptive band preserves differentiation after generator tuning |
 
-Multiplier formula:
+Dynamic multiplier formula:
 ```
-premium_multiplier = 1 + (risk_score - baseline_risk) * 0.25
+scaling_factor = TARGET_SPREAD / (p95 - p5)
+premium_multiplier = 1 + (risk_score - baseline_risk) * scaling_factor
 ```
-Where `baseline_risk` = training set mean stored in `artifacts/meta.json`.
+`TARGET_SPREAD` defaults to 0.35 or can be set with `--premium-target-spread` (or env var `PREMIUM_SCALING_TARGET_SPREAD`).
 
 Lower `risk_score` → multiplier below 1 (discount); higher → above 1 (surcharge). Treat current bands as heuristic until calibrated on real claims data.
 
@@ -106,14 +111,19 @@ Two complementary approaches exist to widen distribution:
 Use them together for maximum spread during experimentation. For a more realistic evaluation, prefer relying on the generator mode and disable injection once natural variance is sufficient.
 
 ## Feature Columns Used For Scoring
-Matches `FEATURE_COLUMNS` in the model module:
+Current `FEATURE_COLUMNS` (behavior + static + interaction):
 - hard_braking_events_per_100mi
 - aggressive_turning_events_per_100mi
 - tailgating_time_ratio
 - speeding_minutes_per_100mi
 - late_night_miles_per_100mi
 - miles
-- prior_claim_count
+- prior_claim_count (or fallback heuristic tier)
+- car_value (normalized; if raw >500 scaled /10000)
+- car_sportiness
+- car_speeding_interaction = (speeding_minutes_per_100mi/10)*(hard_braking_events_per_100mi/5)
+
+Missing new columns in legacy feature dumps are auto-added with zeros prior to the model pipeline transformation.
 
 Missing columns (if any future features are added) are imputed to 0 before passing through the model's preprocessing pipeline (which will apply median imputation + scaling).
 
@@ -135,7 +145,8 @@ If `artifacts/xgb_model.json` is absent:
 |---------|-------|-----|
 | No feature rows | Exposure miles below `MIN_EXPOSURE_MILES` (default 5) | Lower env var or increase events |
 | ImportError for modules | `PYTHONPATH` not set to project root | Run with `PYTHONPATH=.` prefix |
-| All premium multipliers ~1.0 | Model baseline close to predictions (untrained or low variance) | Train a fuller model (increase events/periods) or enable `--extreme-variance` / `--inject-extremes` |
+| All premium multipliers ~1.0 | Model baseline close to predictions (untrained or low variance) | Enable variance flags, retrain, or adjust `--premium-target-spread` upward |
+| Car attributes missing | Events lacked static fields & fallback disabled | Ensure generator includes attributes; fallback now auto-populates deterministically |
 
 ## Exit Criteria For This Demo
 The script is considered successful if:

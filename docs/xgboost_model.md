@@ -21,7 +21,10 @@ This document explains the structure, assumptions, parameters, and transformatio
 | `speeding_minutes_per_100mi` | Minutes over speed threshold per 100 miles | float | Severity / frequency risk |
 | `late_night_miles_per_100mi` | Night driving (00:00–04:00) miles per 100 miles | float | Elevated risk window |
 | `miles` | Exposure (total period miles) | float | Controls for scale |
-| `prior_claim_count` | Historical claim count | int | Baseline risk anchor |
+| `prior_claim_count` | Historical claim count (or heuristic fallback) | int | Baseline risk anchor |
+| `car_value` | Normalized vehicle value (≈ raw/10000 if raw > 500) | float | Scale constrained to avoid dominance |
+| `car_sportiness` | Static 0–1 vehicle performance proxy | float | Correlates with aggressive behavior distribution |
+| `car_speeding_interaction` | (speeding_minutes_per_100mi/10)*(hard_braking_events_per_100mi/5) | float | Explicit speeding × braking interaction |
 | `target_risk` | LABEL: latent synthetic risk (0-1) | float | To be replaced by real target |
 
 ---
@@ -31,7 +34,7 @@ The original simple linear + sigmoid generator evolved through multiple iteratio
 2. Non-linear & interaction effects.
 3. Mild seasonality.
 4. Correlated prior claim counts.
-5. (New) Stronger emphasis on speeding via BOTH linear and convex (quadratic) terms plus a higher-weight speed×braking interaction to increase model sensitivity to aggressive speed behavior.
+5. (New) Stronger emphasis on speeding via BOTH linear and convex (quadratic) terms plus a higher-weight speed×braking interaction to increase model sensitivity to aggressive speed behavior. Vehicle static attributes (`car_value`, `car_sportiness`) and a pre-computed `car_speeding_interaction` are included to enrich signal without depending solely on deeper trees. `car_value` is normalized during synthesis / scoring so magnitude remains comparable to behavioral metrics.
 
 This version targets a broader effective gradient zone so that incremental worsening (especially in speeding) materially shifts predicted risk.
 
@@ -136,7 +139,7 @@ In production replace this generator with actual aggregated features & targets (
 
 ---
 ## Risk → Premium Mapping (Prototype, Dynamic Scaling v2)
-Inference yields `risk_score` predictions which are mapped to a premium multiplier via a *dynamic scaling* mechanism using prediction distribution statistics captured at training time.
+Inference yields `risk_score` predictions which are mapped to a premium multiplier via a *dynamic scaling* mechanism using prediction distribution statistics captured at training time (replacing older fixed-k multiplier logic referenced in some earlier docs).
 
 ### Stored Distribution Stats
 At model training we persist (`meta.json`):
@@ -235,7 +238,7 @@ Explainability (driver coaching): derive top contributing behaviors via SHAP; hi
 
 ---
 ## Inference Contract
-**Input (JSON or CSV row)** must include the feature columns; missing columns are added as NaN and imputed.
+**Input (JSON or CSV row)** must include the feature columns; missing columns are added as NaN and imputed. Legacy rows without the new static / interaction columns are automatically extended (filled with 0). If `car_value` appears unnormalized (>500) it is scaled down (/10000) at scoring time for consistency.
 **Output JSON** (current):
 ```json
 {

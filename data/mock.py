@@ -185,10 +185,10 @@ PROFILE_EVENT_MULTIPLIERS: Dict[str, Dict[str, float]] = {
     },
     "risky": {
         "hard_braking": 3.9,
-        "aggressive_turn": 1.8,
-        "speeding": 2.0,
-        "tailgating": 2.2,
-        "late_night_driving": 2.4,
+        "aggressive_turn": 6.8,
+        "speeding": 5.0,
+        "tailgating": 4.2,
+        "late_night_driving": 5.4,
         "ping": 0.7,
     },
     "ultra_risky": {
@@ -243,8 +243,12 @@ class TelemetryGenerator:
         ct, _w, base_val, sport = chosen
         # value variation: +/- 20% noise log-normal-ish
         value = int(base_val * self.rng.uniform(0.85, 1.25))
-        car = {"car_type": ct, "car_value": value, "car_sportiness": round(sport + self.rng.uniform(-0.05, 0.05), 3)}
-        car["car_sportiness"] = float(min(1.0, max(0.0, car["car_sportiness"])) )
+        car = {
+            "car_type": ct,
+            "car_value": value,
+            "car_sportiness": round(sport + self.rng.uniform(-0.05, 0.05), 3),
+        }
+        car["car_sportiness"] = float(min(1.0, max(0.0, car["car_sportiness"])))
         self._driver_car[driver_id] = car
         return car
 
@@ -362,13 +366,23 @@ class TelemetryGenerator:
                     if profile in ("risky", "ultra_risky"):
                         if spec.name == "speeding":
                             if "duration_sec" in evt:
-                                evt["duration_sec"] = int(evt["duration_sec"] * (2.0 if profile == "risky" else 3.2))
+                                evt["duration_sec"] = int(
+                                    evt["duration_sec"] * (2.0 if profile == "risky" else 3.2)
+                                )
                             if "over_speed_mph" in evt:
-                                evt["over_speed_mph"] = round(float(evt["over_speed_mph"]) * (1.6 if profile == "risky" else 2.2), 1)
+                                evt["over_speed_mph"] = round(
+                                    float(evt["over_speed_mph"])
+                                    * (1.6 if profile == "risky" else 2.2),
+                                    1,
+                                )
                         if spec.name == "hard_braking" and "braking_g" in evt:
-                            evt["braking_g"] = round(min(2.5, evt["braking_g"] * (1.4 if profile == "risky" else 1.8)), 2)
+                            evt["braking_g"] = round(
+                                min(2.5, evt["braking_g"] * (1.4 if profile == "risky" else 1.8)), 2
+                            )
                         if spec.name == "aggressive_turn" and "lateral_g" in evt:
-                            evt["lateral_g"] = round(min(3.0, evt["lateral_g"] * (1.4 if profile == "risky" else 1.9)), 2)
+                            evt["lateral_g"] = round(
+                                min(3.0, evt["lateral_g"] * (1.4 if profile == "risky" else 1.9)), 2
+                            )
                     elif profile in ("ultra_safe", "safe"):
                         if spec.name == "speeding" and "duration_sec" in evt:
                             evt["duration_sec"] = max(5, int(evt["duration_sec"] * 0.5))
@@ -437,7 +451,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--interval", type=float, default=0.5, help="Seconds between streamed events (stream mode)"
     )
     p.add_argument(
-        "--extreme-variance", action="store_true", help="Enable driver risk profiles for wider metric variance"
+        "--extreme-variance",
+        action="store_true",
+        help="Enable driver risk profiles for wider metric variance",
     )
     return p.parse_args(argv)
 
@@ -452,7 +468,9 @@ def detect_format(out_path: str, forced: Optional[str]) -> str:
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
-    cfg = GeneratorConfig(drivers=args.drivers, seed=args.seed, extreme_variance=args.extreme_variance)
+    cfg = GeneratorConfig(
+        drivers=args.drivers, seed=args.seed, extreme_variance=args.extreme_variance
+    )
     gen = TelemetryGenerator(cfg)
     event_iter = gen.events()
 

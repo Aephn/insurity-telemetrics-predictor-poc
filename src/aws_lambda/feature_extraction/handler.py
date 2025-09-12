@@ -111,6 +111,32 @@ def _aggregate(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     # finalize
     out_rows: List[Dict[str, Any]] = []
+    static_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _static_for(driver_id: str) -> Dict[str, Any]:
+        st = static_cache.get(driver_id)
+        if st:
+            return st
+        dh_local = int(hashlib.sha256(driver_id.encode("utf-8")).hexdigest()[:8], 16)
+        bucket_pct = dh_local % 100
+        if bucket_pct < 30:
+            base_val = 18_000
+        elif bucket_pct < 65:
+            base_val = 28_000
+        elif bucket_pct < 83:
+            base_val = 40_000
+        elif bucket_pct < 93:
+            base_val = 65_000
+        elif bucket_pct < 98:
+            base_val = 85_000
+        else:
+            base_val = 140_000
+        car_value = int(base_val * (1.0 + ((dh_local >> 8) % 21 - 10) / 100.0))
+        car_sportiness = round(min(1.0, max(0.0, 0.1 + ((dh_local >> 16) % 70) / 100.0)), 3)
+        st = {"car_value": car_value, "car_sportiness": car_sportiness}
+        static_cache[driver_id] = st
+        return st
+
     for (driver, period_key), bucket in state.items():
         shared = bucket["_shared"]
         row: Dict[str, Any] = {
@@ -141,36 +167,43 @@ def _aggregate(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Deterministic per driver so training / scoring remain stable between runs.
         dh = int(hashlib.sha256(driver.encode("utf-8")).hexdigest()[:8], 16)
 
-        if "car_value" not in row:
-            bucket_pct = dh % 100
-            # approximate buckets similar to generator
-            if bucket_pct < 30:
-                base_val = 18_000
-            elif bucket_pct < 65:
-                base_val = 28_000
-            elif bucket_pct < 83:
-                base_val = 40_000
-            elif bucket_pct < 93:
-                base_val = 65_000
-            elif bucket_pct < 98:
-                base_val = 85_000
-            else:
-                base_val = 140_000
-            row["car_value"] = int(base_val * (1.0 + ((dh >> 8) % 21 - 10) / 100.0))  # +/-10%
+        if "car_value" not in row or "car_sportiness" not in row:
+            static_vals = _static_for(driver)
+            row.setdefault("car_value", static_vals["car_value"])
+            row.setdefault("car_sportiness", static_vals["car_sportiness"])
 
-        if "car_sportiness" not in row:
-            row["car_sportiness"] = round(min(1.0, max(0.0, 0.1 + ((dh >> 16) % 70) / 100.0)), 3)
+        # Derive / recompute prior_claim_count (if missing or zero) for synthetic variation
+        if "prior_claim_count" not in row or row.get("prior_claim_count", 0) == 0:
+            hbr = float(row.get("hard_braking_events_per_100mi", 0.0) or 0.0)
+            atr = float(row.get("aggressive_turning_events_per_100mi", 0.0) or 0.0)
+            tgr = float(row.get("tailgating_time_ratio", 0.0) or 0.0) * 15.0  # scaled down
+            spd = float(row.get("speeding_minutes_per_100mi", 0.0) or 0.0) * 0.5
+            composite = hbr * 0.4 + atr * 0.3 + spd * 0.4 + tgr * 0.6
+            # Map into 0-3 using compact thresholds
+            thresholds = [1.2, 3.0, 6.0]
+            bucket_idx = 0
+            for t in thresholds:
+                if composite >= t:
+                    bucket_idx += 1
+            # slight deterministic variance: bump some drivers up one tier at boundary
+            if bucket_idx < 3 and (dh % 11 == 0):
+                bucket_idx += 1
+            row["prior_claim_count"] = int(min(3, bucket_idx))
 
-        # Derive a lightweight prior_claim_count if absent (correlated weakly with aggressive metrics if present)
-        if "prior_claim_count" not in row:
-            base_claim = (dh >> 24) % 3  # 0-2
-            risk_proxy = 0.0
-            for k in ("hard_braking_events_per_100mi", "aggressive_turning_events_per_100mi", "tailgating_time_ratio"):
-                v = row.get(k)
-                if isinstance(v, (int, float)):
-                    risk_proxy += float(v) * 0.02
-            est = int(min(10, round(base_claim + risk_proxy)))
-            row["prior_claim_count"] = est
+        # Preserve raw and create normalized car value
+        if "car_value" in row:
+            try:
+                raw_val = float(row["car_value"])
+                row["car_value_raw"] = int(raw_val)
+                row["car_value_norm"] = raw_val / 10000.0
+            except Exception:
+                row["car_value_norm"] = row.get("car_value")
+        # Interaction feature
+        if "car_sportiness" in row and "speeding_minutes_per_100mi" in row:
+            try:
+                row["car_speeding_interaction"] = float(row["car_sportiness"]) * float(row.get("speeding_minutes_per_100mi", 0.0))
+            except Exception:
+                pass
         # Skip low exposure
         if row.get("miles", 0.0) < MIN_EXPOSURE_MILES:
             continue

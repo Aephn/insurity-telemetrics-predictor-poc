@@ -50,10 +50,11 @@ A minimum exposure threshold (`MIN_EXPOSURE_MILES`, default 5.0) filters out spa
 | `tailgating_time_ratio` | Proportion of tailgating event minutes to total event minutes | `event_type`, total events | `count(event_type == tailgating) / total_event_minutes` | total_event_minutes ≤ 0 → 0.0 |
 | `speeding_minutes_per_100mi` | Minutes spent speeding per 100 miles | `event_type`, `duration_sec`, `miles` | `100 * (Σ duration_sec(speeding)/60) / miles` (fallback +1/60 if duration missing) | If miles ≤ 0 → 0.0 |
 | `late_night_miles_per_100mi` | Exposure during late-night events per 100 miles | `event_type`, `speed_mph`, `miles` | `100 * (Σ speed_mph/60 for late_night_driving) / miles` | If miles ≤ 0 → 0.0 |
-| `prior_claim_count` | Placeholder for external claims history | (None internal) | Always `0` (stub) | To be replaced by external join |
-| `car_value` | Estimated vehicle replacement cost | passthrough from events | First observed value in period | Missing → omitted |
-| `car_sportiness` | 0-1 performance / behavioral proxy | passthrough from events | First observed; no aggregation | Missing → omitted |
+| `prior_claim_count` | Historical claims proxy (synthetic fallback) | event + derived metrics | If present in events use it; else derived from composite aggressive score (see §4.1) | Missing → 0 if insufficient signals |
+| `car_value` | Normalized vehicle value (≈ replacement cost / 10000) | passthrough / fallback hash | If event field present: normalize (divide by 10000 if > 500); else deterministic hash-based fallback per driver | Missing → generated fallback |
+| `car_sportiness` | 0-1 performance / behavioral proxy | passthrough / fallback hash | First observed; else fallback deterministic value (stable per driver) | Missing → generated fallback |
 | `car_type` | Vehicle category label | passthrough | First observed (categorical) | Informational (not modeled) |
+| `car_speeding_interaction` | Derived interaction of speeding & braking | computed post-metrics | `(speeding_minutes_per_100mi / 10) * (hard_braking_events_per_100mi / 5)` | Zero if components missing |
 
 All computed per driver-period; per-100mi metrics use the *final period exposure miles* after all events processed.
 
@@ -67,6 +68,29 @@ Shared state keys:
 - `exposure_miles` (float)
 - `total_event_minutes` (int)
 - Period metadata: `period_start`, `period_end`
+
+### 4.1 Prior Claim Count Fallback Logic
+If upstream claims join not yet integrated, `prior_claim_count` is inferred from a composite aggressive driving score using percentile-like thresholds applied to the final per‑100mi metrics:
+
+```
+score = (0.5 * hard_braking_events_per_100mi)
+  + (0.4 * speeding_minutes_per_100mi)
+  + (6 * tailgating_time_ratio)
+
+if score < t1 → 0
+elif score < t2 → 1
+elif score < t3 → 2
+else → 3  (capped)
+```
+Thresholds (`t1<t2<t3`) are heuristic (derived from synthetic distribution quantiles) and set where natural cluster gaps appear; adjust if feature distributions shift materially. When real historical claim counts become available, this fallback should be disabled and replaced with joined data.
+
+### 4.2 Static Attribute Fallbacks & Cache
+- A per‑process static cache ensures each driver’s static attributes (`car_value`, `car_sportiness`, `car_type`) are assigned once and reused across periods if events intermittently omit them.
+- Deterministic hash of `driver_id` seeds fallback generation for reproducibility.
+- Normalization: if a raw `car_value` > 500 (assumed unnormalized currency units), it is scaled by dividing by 10,000 so magnitudes ~[0,5] typically (kept small to avoid dwarfing behavioral metrics).
+
+### 4.3 Interaction Feature
+`car_speeding_interaction` is added after base metrics are computed to expose a mild non‑linear joint effect between speeding intensity and braking frequency to the model without requiring tree depth solely for the multiplicative split.
 
 ## 6. Output Row Schema (Current)
 Example JSON row:
@@ -83,10 +107,11 @@ Example JSON row:
   "tailgating_time_ratio": 0.1125,
   "speeding_minutes_per_100mi": 6.5401,
   "late_night_miles_per_100mi": 1.8459,
-  "prior_claim_count": 0
-  "car_value": 32500,
+  "prior_claim_count": 1,
+  "car_value": 3.25,
   "car_sportiness": 0.42,
-  "car_type": "sedan"
+  "car_type": "sedan",
+  "car_speeding_interaction": 0.84
 }
 ```
 

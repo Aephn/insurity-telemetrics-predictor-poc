@@ -79,8 +79,25 @@ def compute_behavior_adjustments(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     metrics.append({"metric": "late_night_miles_per_100mi", "value": ln_miles, "adj": ln_adj})
 
     prior_claims = float(row.get("prior_claim_count", 0.0) or 0.0)
-    claim_adj = min(0.05 * prior_claims, 0.15)
+    # Stronger per-claim impact: +12% each up to +36%
+    claim_adj = min(0.12 * prior_claims, 0.36)
     metrics.append({"metric": "prior_claim_count", "value": prior_claims, "adj": claim_adj})
+
+    # Car value tier adjustments (severity proxy) applied additively
+    car_val_raw = float(row.get("car_value_raw") or row.get("car_value") or 0.0)
+    if car_val_raw > 0:
+        cv_adj = tier(
+            car_val_raw,
+            [
+                (0, 20000, -0.02),
+                (20000, 35000, 0.0),
+                (35000, 60000, 0.03),
+                (60000, 90000, 0.06),
+                (90000, 130000, 0.09),
+                (130000, float("inf"), 0.12),
+            ],
+        )
+        metrics.append({"metric": "car_value_raw", "value": car_val_raw, "adj": cv_adj})
 
     miles = float(row.get("miles", 0.0) or 0.0)
     miles_adj = 0.0
