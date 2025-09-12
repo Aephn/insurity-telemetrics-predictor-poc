@@ -89,7 +89,7 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -124,6 +124,7 @@ class ModelArtifacts:
     booster: xgb.Booster
     feature_pipeline: Pipeline  # imputers / scalers
     baseline_risk: float
+    dist_stats: Dict[str, Any] = field(default_factory=dict)  # optional distribution metadata
 
     def save(self, model_dir: Path) -> None:
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -134,7 +135,7 @@ class ModelArtifacts:
         import joblib
 
         joblib.dump(self.feature_pipeline, model_dir / "feature_pipeline.joblib")
-        meta = {"baseline_risk": float(self.baseline_risk)}
+        meta = {"baseline_risk": float(self.baseline_risk), "dist_stats": self.dist_stats}
         (model_dir / "meta.json").write_text(json.dumps(meta))
 
     @staticmethod
@@ -146,12 +147,18 @@ class ModelArtifacts:
         pipeline: Pipeline = joblib.load(model_dir / "feature_pipeline.joblib")
         meta = json.loads((model_dir / "meta.json").read_text())
         return ModelArtifacts(
-            booster=booster, feature_pipeline=pipeline, baseline_risk=meta.get("baseline_risk", 0.5)
+            booster=booster,
+            feature_pipeline=pipeline,
+            baseline_risk=meta.get("baseline_risk", 0.5),
+            dist_stats=meta.get("dist_stats", {}),
         )
 
 
 def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.DataFrame:
-    """Enhanced synthetic data with more realistic risk patterns."""
+    """Enhanced synthetic data with more realistic risk patterns.
+
+    Updated: Emphasize speeding & interaction effects for greater sensitivity.
+    """
 
     rows: List[Dict[str, Any]] = []
 
@@ -196,26 +203,30 @@ def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.Da
 
             miles = RNG.normal(850, 220)
 
-            # More sophisticated risk calculation
-            # Non-linear interactions between features
-            tailgating_effect = tailgating_ratio * 2.0  # Strong effect
-            speed_braking_interaction = (speeding_minutes / 10) * (hard_braking / 5) * 0.5
+            # More sophisticated risk calculation:
+            # Emphasize speeding more strongly & add convex penalty for very high speeding.
+            tailgating_effect = tailgating_ratio * 2.0  # strong effect
+            speed_braking_interaction = (speeding_minutes / 10) * (hard_braking / 5) * 0.6
+            speeding_linear = 0.10 * speeding_minutes  # increased from 0.04
+            speeding_convex = 0.02 * (speeding_minutes ** 2 / 100.0)  # grows faster at extremes
 
             linear_risk = (
                 tailgating_effect
                 + 0.08 * hard_braking
                 + 0.06 * aggressive_turns
-                + 0.04 * speeding_minutes
+                + speeding_linear
+                + speeding_convex
                 + 0.03 * late_night_miles
                 + 0.02 * prior_claims
-                + speed_braking_interaction  # Interaction term
+                + speed_braking_interaction
             )
 
             # Add temporal effects (seasonal patterns)
             seasonal_factor = 1 + 0.1 * np.sin(2 * np.pi * p / 12)  # Winter risk increase
 
-            noise = RNG.normal(0, 0.08)
-            risk = base_risk + (1 / (1 + np.exp(-(linear_risk + noise - 1.0)))) * seasonal_factor
+            noise = RNG.normal(0, 0.07)
+            # Shift logistic center slightly lower (0.9) to widen mid-range gradients
+            risk = base_risk + (1 / (1 + np.exp(-(linear_risk + noise - 0.9)))) * seasonal_factor
             risk = np.clip(risk, 0.01, 0.99)  # Keep in reasonable bounds
 
             rows.append(
@@ -315,9 +326,19 @@ def train_model(
     rmse = float(mse**0.5)
     metrics = {"validation_rmse": rmse, "best_iteration": booster.best_iteration}
     baseline_risk = float(y_train.mean())
+    # Distribution stats for dynamic scaling
+    p5, p50, p95 = (float(np.percentile(y_val_pred, q)) for q in (5, 50, 95))
+    val_std = float(np.std(y_val_pred))
+    dist_stats = {
+        "pred_p5": p5,
+        "pred_p50": p50,
+        "pred_p95": p95,
+        "pred_std": val_std,
+    }
     artifacts = ModelArtifacts(
-        booster=booster, feature_pipeline=pipeline, baseline_risk=baseline_risk
+        booster=booster, feature_pipeline=pipeline, baseline_risk=baseline_risk, dist_stats=dist_stats
     )
+    metrics.update(dist_stats)
     return artifacts, metrics
 
 
@@ -376,8 +397,17 @@ def predict_fn(input_data: pd.DataFrame, model: ModelArtifacts):  # type: ignore
     X_proc = model.feature_pipeline.transform(X_data)
     dmat = xgb.DMatrix(X_proc, feature_names=FEATURE_COLUMNS)
     preds = model.booster.predict(dmat)
-    # premium multiplier (toy scaling): amplify variance
-    scaling_factor = 0.25
+    # Dynamic premium multiplier scaling: target spread based on prediction distribution stats.
+    dist = model.dist_stats or {}
+    p5 = dist.get("pred_p5")
+    p95 = dist.get("pred_p95")
+    scaling_factor_env = os.environ.get("PREMIUM_SCALING_TARGET_SPREAD")
+    target_spread = float(scaling_factor_env) if scaling_factor_env else 0.35  # desired (p95 - p5) * scale ≈ 0.35
+    if p5 is not None and p95 is not None and (p95 - p5) > 1e-6:
+        # Derive scaling so that (p95 - p5) * scale ~= target_spread
+        scaling_factor = target_spread / (p95 - p5)
+    else:
+        scaling_factor = 0.35  # fallback
     premium_multiplier = 1 + (preds - model.baseline_risk) * scaling_factor
     return {
         "risk_score": preds.tolist(),

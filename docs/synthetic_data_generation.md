@@ -1,5 +1,5 @@
 
-# Mock Telemetry Data Generation
+# Mock Telemetry Data Generation (POC)
 
 A flexible synthetic telematics event generator is provided at `data/mock.py` to bootstrap experimentation without real devices and provide a POC example for the pipeline.
 

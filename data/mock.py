@@ -145,6 +145,64 @@ class GeneratorConfig:
     trip_std_minutes: int = 9
     # Rate of new trip start probability per minute per driver when idle
     trip_start_prob: float = 0.07
+    # Extreme variance mode introduces driver risk profiles & amplified behaviors
+    extreme_variance: bool = False
+
+
+RISK_PROFILE_KEYS = [
+    "ultra_safe",
+    "safe",
+    "moderate",
+    "risky",
+    "ultra_risky",
+]
+
+# Multipliers applied to base event probabilities per driver profile (extreme mode only)
+PROFILE_EVENT_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+    "ultra_safe": {
+        "hard_braking": 0.1,
+        "aggressive_turn": 0.1,
+        "speeding": 0.12,
+        "tailgating": 0.08,
+        "late_night_driving": 0.05,
+        "ping": 2.5,
+    },
+    "safe": {
+        "hard_braking": 0.4,
+        "aggressive_turn": 0.4,
+        "speeding": 0.5,
+        "tailgating": 0.4,
+        "late_night_driving": 0.4,
+        "ping": 1.6,
+    },
+    "moderate": {  # baseline ~1.0
+        "hard_braking": 1.0,
+        "aggressive_turn": 1.0,
+        "speeding": 1.0,
+        "tailgating": 1.0,
+        "late_night_driving": 1.0,
+        "ping": 1.0,
+    },
+    "risky": {
+        "hard_braking": 3.9,
+        "aggressive_turn": 1.8,
+        "speeding": 2.0,
+        "tailgating": 2.2,
+        "late_night_driving": 2.4,
+        "ping": 0.7,
+    },
+    "ultra_risky": {
+        "hard_braking": 10.2,
+        "aggressive_turn": 9.0,
+        "speeding": 10.5,
+        "tailgating": 9.8,
+        "late_night_driving": 12.2,
+        "ping": 0.2,
+    },
+}
+
+# Profile selection weights in extreme variance mode
+PROFILE_SELECTION_WEIGHTS = [0.05, 0.25, 0.40, 0.20, 0.10]  # must align with RISK_PROFILE_KEYS
 
 
 class TelemetryGenerator:
@@ -152,12 +210,45 @@ class TelemetryGenerator:
         self.cfg = config
         self.rng = random.Random(config.seed)
         self._driver_state: Dict[str, Dict[str, Any]] = {}
+        self._driver_profile: Dict[str, str] = {}
 
-    def _choose_event_type(self) -> EventTypeSpec:
-        r = self.rng.uniform(0, TOTAL_WEIGHT)
+    def _assign_profile(self, driver_id: str) -> str:
+        if not self.cfg.extreme_variance:
+            return "moderate"
+        profile = self._driver_profile.get(driver_id)
+        if profile:
+            return profile
+        # weighted choice
+        r = self.rng.random()
+        acc = 0.0
+        for key, w in zip(RISK_PROFILE_KEYS, PROFILE_SELECTION_WEIGHTS):
+            acc += w
+            if r <= acc:
+                profile = key
+                break
+        else:  # fallback
+            profile = RISK_PROFILE_KEYS[-1]
+        self._driver_profile[driver_id] = profile
+        return profile
+
+    def _choose_event_type(self, profile: str) -> EventTypeSpec:
+        if not self.cfg.extreme_variance:
+            r = self.rng.uniform(0, TOTAL_WEIGHT)
+            acc = 0.0
+            for spec in EVENT_TYPE_CONFIG:
+                acc += spec.probability
+                if r <= acc:
+                    return spec
+            return EVENT_TYPE_CONFIG[-1]
+        mults = PROFILE_EVENT_MULTIPLIERS[profile]
+        total = 0.0
+        for spec in EVENT_TYPE_CONFIG:
+            total += spec.probability * mults.get(spec.name, 1.0)
+        r = self.rng.uniform(0, total)
         acc = 0.0
         for spec in EVENT_TYPE_CONFIG:
-            acc += spec.probability
+            w = spec.probability * mults.get(spec.name, 1.0)
+            acc += w
             if r <= acc:
                 return spec
         return EVENT_TYPE_CONFIG[-1]
@@ -186,12 +277,19 @@ class TelemetryGenerator:
         while True:
             for d in range(self.cfg.drivers):
                 driver_id = f"D{d:04d}"
+                profile = self._assign_profile(driver_id)
                 trip_id = self._ensure_trip(driver_id, current_minute)
-                spec = self._choose_event_type()
+                spec = self._choose_event_type(profile)
                 base_speed = self.rng.uniform(self.cfg.min_speed, self.cfg.max_speed)
                 speed_factor = 1.0
                 if spec.name == "ping":
                     speed_factor = 0.6
+                if self.cfg.extreme_variance:
+                    # profile-specific speed scaling to influence exposure denominator
+                    if profile in ("ultra_safe", "safe"):
+                        speed_factor *= 1.1  # slightly higher miles -> lowers per-100 event rates
+                    elif profile in ("risky", "ultra_risky"):
+                        speed_factor *= 0.8  # fewer miles -> higher per-100 metrics
                 if spec.name == "late_night_driving":
                     # Force timestamp into late-night window for semantics
                     event_ts = (start_time + timedelta(minutes=current_minute)).replace(
@@ -221,6 +319,27 @@ class TelemetryGenerator:
                     "period_minute": current_minute,
                 }
                 evt.update(spec.attribute_fn(self.rng))
+                if self.cfg.extreme_variance:
+                    # Amplify / dampen type-specific intensities for extremes
+                    if profile in ("risky", "ultra_risky"):
+                        if spec.name == "speeding":
+                            if "duration_sec" in evt:
+                                evt["duration_sec"] = int(evt["duration_sec"] * (2.0 if profile == "risky" else 3.2))
+                            if "over_speed_mph" in evt:
+                                evt["over_speed_mph"] = round(float(evt["over_speed_mph"]) * (1.6 if profile == "risky" else 2.2), 1)
+                        if spec.name == "hard_braking" and "braking_g" in evt:
+                            evt["braking_g"] = round(min(2.5, evt["braking_g"] * (1.4 if profile == "risky" else 1.8)), 2)
+                        if spec.name == "aggressive_turn" and "lateral_g" in evt:
+                            evt["lateral_g"] = round(min(3.0, evt["lateral_g"] * (1.4 if profile == "risky" else 1.9)), 2)
+                    elif profile in ("ultra_safe", "safe"):
+                        if spec.name == "speeding" and "duration_sec" in evt:
+                            evt["duration_sec"] = max(5, int(evt["duration_sec"] * 0.5))
+                        if spec.name == "hard_braking" and "braking_g" in evt:
+                            evt["braking_g"] = round(evt["braking_g"] * 0.7, 2)
+                        if spec.name == "aggressive_turn" and "lateral_g" in evt:
+                            evt["lateral_g"] = round(evt["lateral_g"] * 0.7, 2)
+                if self.cfg.extreme_variance:
+                    evt["driver_profile"] = profile
                 yield evt
             current_minute += 1
 
@@ -279,6 +398,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--interval", type=float, default=0.5, help="Seconds between streamed events (stream mode)"
     )
+    p.add_argument(
+        "--extreme-variance", action="store_true", help="Enable driver risk profiles for wider metric variance"
+    )
     return p.parse_args(argv)
 
 
@@ -292,7 +414,7 @@ def detect_format(out_path: str, forced: Optional[str]) -> str:
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
-    cfg = GeneratorConfig(drivers=args.drivers, seed=args.seed)
+    cfg = GeneratorConfig(drivers=args.drivers, seed=args.seed, extreme_variance=args.extreme_variance)
     gen = TelemetryGenerator(cfg)
     event_iter = gen.events()
 
