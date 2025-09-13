@@ -26,7 +26,12 @@ import httpx
 # -------------------------------------------------------------
 # Global endpoints (environment-specific hardcoded for local testing)
 # -------------------------------------------------------------
-BASE_API = "https://aun2yziumg.execute-api.us-east-1.amazonaws.com/dev"
+# NOTE: API Gateway URLs must include the stage segment (e.g., /dev). 403 'Forbidden' occurs if omitted.
+# Configure via env vars API_ROOT (without stage) and API_STAGE (default 'dev').
+API_ROOT = os.getenv("API_ROOT", "https://cs0bkcfdjf.execute-api.us-east-1.amazonaws.com").rstrip("/")
+API_STAGE = os.getenv("API_STAGE", "dev").strip("/")
+BASE_API = f"{API_ROOT}/{API_STAGE}"  # now includes stage
+
 VALIDATE_ENDPOINT = f"{BASE_API}/validate"
 TELEMETRY_ENDPOINT = f"{BASE_API}/telemetry"
 STATUS_ENDPOINT = f"{BASE_API}/status"
@@ -79,7 +84,9 @@ def gen_event(idx: int, driver_id: str | None = None) -> dict:
         "longitude": round(random.uniform(-124.0, -67.0), 5),
         "speed_mph": round(random.uniform(0, 85), 1),
         "heading_deg": random.randint(0, 359),
-        "period_minute": int(time.time() // 60),
+    # Keep period_minute within schema constraint (<= 100000)
+    # Use modulo of epoch minutes to stay deterministic-ish but valid.
+    "period_minute": int(time.time() // 60) % 100000,
     }
     if etype == "hard_braking":
         data["braking_g"] = round(random.uniform(0.1, 0.9), 2)

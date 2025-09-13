@@ -837,7 +837,7 @@ resource "aws_iam_role_policy" "dashboard_ddb_read" {
     Statement = [
       {
         Effect   = "Allow",
-        Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"],
+  Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:DescribeTable"],
         Resource = ["arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.telemetry_table_name}", "arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.telemetry_table_name}/index/*"]
       }
     ]
@@ -855,7 +855,7 @@ resource "aws_lambda_function" "dashboard_snapshot" {
   timeout       = 20
   memory_size   = 512
   architectures = ["arm64"]
-  environment { variables = { ENV = var.env, MODEL_ARTIFACTS_DIR = "/var/task/artifacts" } }
+  environment { variables = { ENV = var.env, MODEL_ARTIFACTS_DIR = "/var/task/artifacts", TELEMETRY_TABLE = var.telemetry_table_name } }
   depends_on = [null_resource.pricing_build, aws_iam_role_policy_attachment.dashboard_basic, aws_iam_role_policy.dashboard_ddb_read]
   tags = local.tags
 }
