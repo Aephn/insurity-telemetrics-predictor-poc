@@ -10,6 +10,7 @@ artifacts
 validation_build
 deps_build_work
 validation_build_work
+pricing_build_work
 
 ### Linux ###
 *~

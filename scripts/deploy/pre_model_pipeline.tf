@@ -100,13 +100,131 @@ variable "pricing_source_dir" {
 variable "pricing_dependencies" {
   description = "Dependencies to vendor into pricing engine lambda"
   type        = list(string)
-  # Pricing lambda only enriches existing SageMaker predictions; no heavy ML libs needed.
-  default     = []
+  # Include numpy & pandas for pricing math / aggregation; keep list minimal to control bundle size.
+  default     = ["numpy", "pandas"]
 }
+variable "price_history_bucket_name" {
+  description = "S3 bucket name for price history exports"
+  type        = string
+  default     = "telemetry-price-history"
+}
+
 
 locals {
   name_prefix = "telemetry-min-${var.env}"
   tags        = { Environment = var.env, Service = "telemetry-min" }
+}
+
+#############################################
+# Storage Layer (merged from databases.tf)
+#############################################
+
+resource "aws_dynamodb_table" "telemetry" {
+  name         = var.telemetry_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+  attribute {
+    name = "GSI1PK"
+    type = "S"
+  }
+  attribute {
+    name = "GSI1SK"
+    type = "S"
+  }
+  attribute {
+    name = "GSI2PK"
+    type = "S"
+  }
+  attribute {
+    name = "GSI2SK"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "GSI1_EventsByUser"
+    hash_key        = "GSI1PK"
+    range_key       = "GSI1SK"
+    projection_type = "INCLUDE"
+    non_key_attributes = ["event_type", "severity", "value", "speedMph"]
+  }
+
+  global_secondary_index {
+    name            = "GSI2_PeriodAggregates"
+    hash_key        = "GSI2PK"
+    range_key       = "GSI2SK"
+    projection_type = "INCLUDE"
+    non_key_attributes = ["risk_score", "final_monthly_premium", "safety_score"]
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+  tags = merge(local.tags, { Store = "dynamodb" })
+}
+
+resource "aws_s3_bucket" "price_history" {
+  bucket        = var.price_history_bucket_name
+  force_destroy = var.env != "prod"
+  tags          = merge(local.tags, { Purpose = "price-history" })
+}
+
+resource "aws_s3_bucket_versioning" "price_history" {
+  bucket = aws_s3_bucket.price_history.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "price_history" {
+  bucket = aws_s3_bucket.price_history.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "price_history" {
+  bucket                  = aws_s3_bucket.price_history.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "price_history" {
+  bucket = aws_s3_bucket.price_history.id
+  rule {
+    id     = "cold-tier"
+    status = "Enabled"
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
+    transition {
+      days          = 180
+      storage_class = "DEEP_ARCHIVE"
+    }
+    noncurrent_version_transition {
+      noncurrent_days = 60
+      storage_class   = "GLACIER_IR"
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 730
+    }
+  }
 }
 
 # Build validation lambda deployment package including dependencies at apply time.
@@ -697,6 +815,8 @@ resource "aws_lambda_function" "pricing_engine" {
 }
 
 output "pricing_lambda_name" { value = aws_lambda_function.pricing_engine.function_name }
+output "dynamodb_table_name" { value = aws_dynamodb_table.telemetry.name }
+output "price_history_bucket_name" { value = aws_s3_bucket.price_history.bucket }
 
 output "sagemaker_endpoint_name" {
   value       = var.deploy_sagemaker ? aws_sagemaker_endpoint.xgb_ep[0].name : null

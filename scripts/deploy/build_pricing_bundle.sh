@@ -10,7 +10,7 @@ set -euo pipefail
 #  5. Optionally upload to existing lambda unless --no-upload
 #
 # Environment overrides:
-#   PRICING_DEPS            Space separated dependency list (default "numpy pandas xgboost scikit-learn joblib")
+#   PRICING_DEPS            Space separated dependency list (terraform default now: "numpy pandas")
 #   PRICING_SRC_DIR         Source directory (default ../../src/aws_lambda/pricing_engine)
 #   MODEL_ARTIFACTS_DIR     Directory containing model artifacts to embed (default ../../artifacts)
 #   OUT_ZIP                 Output zip filename (default pricing_lambda_bundle.zip)
@@ -21,7 +21,7 @@ set -euo pipefail
 # Usage:
 #   ./build_pricing_bundle.sh [--function-name MyLambda] [--no-upload]
 
-DEPS=${PRICING_DEPS:-""}
+DEPS=${PRICING_DEPS:-"numpy pandas"}
 SRC_DIR=${PRICING_SRC_DIR:-../../src/aws_lambda/pricing_engine}
 MODEL_DIR=${MODEL_ARTIFACTS_DIR:-../../artifacts}
 OUT_ZIP=${OUT_ZIP:-pricing_lambda_bundle.zip}
