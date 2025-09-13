@@ -2,6 +2,8 @@
 
 **NOTE: This project was built across 3 days as part of the take-home project for the final round interview for Insurity AI for the Fall 2025 Quarter.**
 
+The link to the repo can be found [here.](https://github.com/Aephn/insurity-telemetrics-predictor-poc)
+
 ![alt text](docs/homepage.png)
 
 
