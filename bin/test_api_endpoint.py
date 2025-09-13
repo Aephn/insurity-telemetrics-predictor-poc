@@ -29,7 +29,9 @@ import httpx
 # -------------------------------------------------------------
 # NOTE: API Gateway URLs must include the stage segment (e.g., /dev). 403 'Forbidden' occurs if omitted.
 # Configure via env vars API_ROOT (without stage) and API_STAGE (default 'dev').
-API_ROOT = os.getenv("API_ROOT", "https://ayvkdmlnyh.execute-api.us-east-1.amazonaws.com").rstrip("/")
+API_ROOT = os.getenv("API_ROOT", "https://ayvkdmlnyh.execute-api.us-east-1.amazonaws.com").rstrip(
+    "/"
+)
 API_STAGE = os.getenv("API_STAGE", "dev").strip("/")
 BASE_API = f"{API_ROOT}/{API_STAGE}"  # now includes stage
 
@@ -50,21 +52,25 @@ ENDPOINTS = {
 # -------------------------------------------------------------
 # CONFIG (adjust as needed)
 # -------------------------------------------------------------
-TARGET_PATH = "location"         # one of keys in ENDPOINTS or set TARGET_URL directly
-TARGET_URL: str | None = None     # override full URL if desired
-EVENT_COUNT = 2                   # number of valid events (ignored if DIRECT_EVENTS_FILE used)
-INCLUDE_INVALID = False           # add one invalid record to force 207
-PRINT_PAYLOAD = True              # print JSON payload before sending
-TIMEOUT_SECS = 10.0               # HTTP timeout
-REPEAT = 1                        # number of sequential requests
-SLEEP_BETWEEN = 0.5               # delay between repeats (seconds)
+TARGET_PATH = "location"  # one of keys in ENDPOINTS or set TARGET_URL directly
+TARGET_URL: str | None = None  # override full URL if desired
+EVENT_COUNT = 2  # number of valid events (ignored if DIRECT_EVENTS_FILE used)
+INCLUDE_INVALID = False  # add one invalid record to force 207
+PRINT_PAYLOAD = True  # print JSON payload before sending
+TIMEOUT_SECS = 10.0  # HTTP timeout
+REPEAT = 1  # number of sequential requests
+SLEEP_BETWEEN = 0.5  # delay between repeats (seconds)
 
 # --- New deterministic / direct injection controls ---
-RANDOM_SEED: int | None = None    # set int for deterministic pseudo-random generation
+RANDOM_SEED: int | None = None  # set int for deterministic pseudo-random generation
 FIXED_DRIVER_ID: str | None = None  # force all events to use this driver id
-FIXED_EVENT_TYPE: str | None = None  # force event_type to this string (must be one of EVENT_TYPES below)
-USE_VARIANTS = True               # if False, do not randomize driver_id/trip_id each event
-DIRECT_EVENTS_FILE: str | None = None  # path to JSON file containing an array of events to send as-is
+FIXED_EVENT_TYPE: str | None = (
+    None  # force event_type to this string (must be one of EVENT_TYPES below)
+)
+USE_VARIANTS = True  # if False, do not randomize driver_id/trip_id each event
+DIRECT_EVENTS_FILE: str | None = (
+    None  # path to JSON file containing an array of events to send as-is
+)
 
 EVENT_TYPES = [
     "hard_braking",
@@ -90,7 +96,11 @@ def _stable_id(prefix: str, idx: int) -> str:
 
 def gen_event(idx: int, driver_id: str | None = None) -> dict:
     etype = FIXED_EVENT_TYPE or random.choice(EVENT_TYPES)
-    d_id = driver_id or FIXED_DRIVER_ID or (f"D{random.randint(1000,9999)}" if USE_VARIANTS else _stable_id("D", 0))
+    d_id = (
+        driver_id
+        or FIXED_DRIVER_ID
+        or (f"D{random.randint(1000,9999)}" if USE_VARIANTS else _stable_id("D", 0))
+    )
     trip_id = _stable_id("T", idx) if not USE_VARIANTS else f"T-{random.randint(10000,99999)}"
     data = {
         "event_id": uuid.uuid4().hex if USE_VARIANTS else f"E{idx:08d}",

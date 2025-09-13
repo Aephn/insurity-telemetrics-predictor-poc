@@ -10,6 +10,7 @@ Modes (mutually exclusive):
 State: Maintains an in-memory rolling list of synthetic recent events reflecting the chosen mode.
 Cloud safety: Only this local script is modified; Lambda code remains unchanged.
 """
+
 from __future__ import annotations
 import json
 import argparse
@@ -36,7 +37,9 @@ except ModuleNotFoundError:  # fallback when running locally without 'src' packa
     try:
         from aws_lambda.dashboard_snapshot.handler import generate_snapshot  # type: ignore
     except ModuleNotFoundError as e:  # pragma: no cover
-        raise RuntimeError("Unable to locate dashboard_snapshot.handler; check your repo layout") from e
+        raise RuntimeError(
+            "Unable to locate dashboard_snapshot.handler; check your repo layout"
+        ) from e
 
 
 _MODE = {
@@ -47,6 +50,7 @@ _MODE = {
 _EVENT_BUFFER: list[dict] = []
 _MAX_EVENTS = 200
 _BASE_SNAPSHOT: dict | None = None  # cached initial snapshot
+
 
 def _mutate_snapshot(snapshot: dict) -> dict:
     """Adjust snapshot factors & history based on mode, and append a new synthetic recent event."""
@@ -85,11 +89,46 @@ def _mutate_snapshot(snapshot: dict) -> dict:
         noise = (-0.10, 0.15)
 
     # Adjust underlying monthly scores (premium risk interplay simplified)
-    latest["premium"] = float(clamp(latest.get("premium", 110) * (1.05 if _MODE["bad"] else 0.98 if _MODE["good"] else mult), 40, 400))
-    latest["modelMultiplier"] = float(clamp(latest.get("modelMultiplier", 1.0) * (1.10 if _MODE["bad"] else 0.95 if _MODE["good"] else mult), 0.5, 3.0))
-    latest["riskScore"] = float(clamp(latest.get("riskScore", 0.5) * (1.20 if _MODE["bad"] else 0.90 if _MODE["good"] else mult), 0.01, 5.0))
+    latest["premium"] = float(
+        clamp(
+            latest.get("premium", 110)
+            * (1.05 if _MODE["bad"] else 0.98 if _MODE["good"] else mult),
+            40,
+            400,
+        )
+    )
+    latest["modelMultiplier"] = float(
+        clamp(
+            latest.get("modelMultiplier", 1.0)
+            * (1.10 if _MODE["bad"] else 0.95 if _MODE["good"] else mult),
+            0.5,
+            3.0,
+        )
+    )
+    latest["riskScore"] = float(
+        clamp(
+            latest.get("riskScore", 0.5)
+            * (1.20 if _MODE["bad"] else 0.90 if _MODE["good"] else mult),
+            0.01,
+            5.0,
+        )
+    )
     base_score = latest.get("safetyScore", 70)
-    latest["safetyScore"] = int(clamp(base_score - random.uniform(3, 7) if _MODE["bad"] else base_score + random.uniform(2, 5) if _MODE["good"] else base_score + random.uniform(-3, 3), 0, 100))
+    latest["safetyScore"] = int(
+        clamp(
+            (
+                base_score - random.uniform(3, 7)
+                if _MODE["bad"]
+                else (
+                    base_score + random.uniform(2, 5)
+                    if _MODE["good"]
+                    else base_score + random.uniform(-3, 3)
+                )
+            ),
+            0,
+            100,
+        )
+    )
 
     # Build a new event reflecting change
     new_evt = None
@@ -154,9 +193,9 @@ def _get_cached_snapshot() -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     def _set_cors(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def do_OPTIONS(self):  # noqa: N802 - preflight
         self.send_response(204)
@@ -165,23 +204,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path == '/api/dashboard':
+        if parsed.path == "/api/dashboard":
             snap = _get_cached_snapshot()
             snap = _mutate_snapshot(snap)
-            body = json.dumps(snap).encode('utf-8')
+            body = json.dumps(snap).encode("utf-8")
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header("Content-Type", "application/json")
             self._set_cors()
-            self.send_header('Content-Length', str(len(body)))
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
-        if parsed.path == '/healthz':
-            body = b'OK'
+        if parsed.path == "/healthz":
+            body = b"OK"
             self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
+            self.send_header("Content-Type", "text/plain")
             self._set_cors()
-            self.send_header('Content-Length', '2')
+            self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(body)
             return
@@ -191,27 +230,34 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_server(port: int = 8787):
-    httpd = HTTPServer(('0.0.0.0', port), Handler)
+    httpd = HTTPServer(("0.0.0.0", port), Handler)
     print(f"Mock dashboard server on http://localhost:{port}/api/dashboard (health: /healthz)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:  # pragma: no cover
-        print('\nServer stopping...')
+        print("\nServer stopping...")
     finally:
         httpd.server_close()
-        print('Server shutdown.')
+        print("Server shutdown.")
+
 
 def _parse_args():
     p = argparse.ArgumentParser(description="Local dashboard mock server")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--bad-driver", action="store_true", help="Continuously worsen driver risk factors")
-    g.add_argument("--good-driver", action="store_true", help="Continuously improve driver risk factors")
-    g.add_argument("--random-driver", action="store_true", help="Random walk driver risk factors (default)")
+    g.add_argument(
+        "--bad-driver", action="store_true", help="Continuously worsen driver risk factors"
+    )
+    g.add_argument(
+        "--good-driver", action="store_true", help="Continuously improve driver risk factors"
+    )
+    g.add_argument(
+        "--random-driver", action="store_true", help="Random walk driver risk factors (default)"
+    )
     p.add_argument("--port", type=int, default=8787, help="Port to listen on (default 8787)")
     return p.parse_args()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = _parse_args()
     if args.bad_driver:
         _MODE.update({"bad": True, "good": False, "random": False})

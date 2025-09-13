@@ -143,7 +143,9 @@ def parse_body(event: Dict[str, Any]) -> Union[List[Dict[str, Any]], Dict[str, A
     return data
 
 
-def validate_events(raw: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Tuple[ValidationResult, List[Dict[str, Any]]]:
+def validate_events(
+    raw: Union[List[Dict[str, Any]], Dict[str, Any]],
+) -> Tuple[ValidationResult, List[Dict[str, Any]]]:
     if isinstance(raw, dict):
         records = [raw]
     else:
@@ -160,11 +162,13 @@ def validate_events(raw: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Tuple[V
                 parsed_errors = json.loads(ve.json())
             except Exception:  # fallback
                 parsed_errors = [err if isinstance(err, dict) else {"msg": str(err)} for err in ve.errors()]  # type: ignore[arg-type]
-            errors.append({
-                "index": idx,
-                "errors": parsed_errors,
-                "event_id": rec.get("event_id"),
-            })
+            errors.append(
+                {
+                    "index": idx,
+                    "errors": parsed_errors,
+                    "event_id": rec.get("event_id"),
+                }
+            )
         except Exception as e:  # noqa: BLE001
             errors.append({"index": idx, "errors": [str(e)], "event_id": rec.get("event_id")})
     return (
@@ -196,7 +200,9 @@ def _get_kinesis_client():  # lazy init to keep cold start minimal
     return _kinesis_client
 
 
-def _chunk_records(records: List[Dict[str, Any]], max_count: int = 500, max_bytes: int = 5_000_000) -> List[List[Dict[str, Any]]]:
+def _chunk_records(
+    records: List[Dict[str, Any]], max_count: int = 500, max_bytes: int = 5_000_000
+) -> List[List[Dict[str, Any]]]:
     """Chunk records according to Kinesis PutRecords limits.
 
     - Up to 500 records per request
@@ -256,7 +262,9 @@ def forward_to_kinesis(valid_events: List[Dict[str, Any]]) -> Dict[str, Any]:
             recs = resp.get("Records", [])
             for i, r in enumerate(recs):
                 if "ErrorCode" in r and r["ErrorCode"]:
-                    failed.append({"index": i, "error": r["ErrorCode"], "message": r.get("ErrorMessage")})
+                    failed.append(
+                        {"index": i, "error": r["ErrorCode"], "message": r.get("ErrorMessage")}
+                    )
                 else:
                     success += 1
         except (BotoCoreError, ClientError) as e:  # pragma: no cover - network

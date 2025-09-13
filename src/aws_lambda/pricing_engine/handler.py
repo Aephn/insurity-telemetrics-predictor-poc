@@ -50,10 +50,14 @@ try:
 except Exception:  # pragma: no cover
     # Allow running in a minimal inference context if the training module isn't packaged.
     from typing import Any as _Any  # fallback
+
     ModelArtifacts = _Any  # type: ignore
     FEATURE_COLUMNS = []  # type: ignore
+
     def predict_fn(df, model):  # type: ignore
         raise RuntimeError("predict_fn unavailable; model artifacts module not packaged")
+
+
 try:
     # When deployed, the module may be at the root (no package context), so relative import can fail.
     from formulas import compute_behavior_adjustments, finalize_multiplier, compute_price  # type: ignore
@@ -81,6 +85,7 @@ except Exception:  # pragma: no cover - local minimal env
 
 _ddb_client = None
 
+
 def _get_ddb():  # lazy
     global _ddb_client
     if _ddb_client is None and boto3 is not None and TELEMETRY_TABLE:
@@ -89,6 +94,7 @@ def _get_ddb():  # lazy
         except Exception:  # pragma: no cover
             _ddb_client = None
     return _ddb_client
+
 
 # ------------------------------------------------------------------------------------
 # Internal helpers for pricing
@@ -169,6 +175,7 @@ def price_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # can satisfy both the pricing POST and dashboard GET endpoints).
 # ------------------------------------------------------------------------------------
 
+
 def _safety_score(row: Dict[str, Any]) -> int:
     hb = float(row.get("hard_braking_events_per_100mi", 0))
     sp = float(row.get("speeding_minutes_per_100mi", 0))
@@ -209,7 +216,9 @@ def generate_dashboard_snapshot() -> Dict[str, Any]:  # mirrors original dashboa
         raise
 
     # Pick first item
-    driver_id = items[0].get("driver_id", {}).get("S") or _extract_driver_from_pk(items[0].get("PK", {}).get("S", ""))
+    driver_id = items[0].get("driver_id", {}).get("S") or _extract_driver_from_pk(
+        items[0].get("PK", {}).get("S", "")
+    )
     if not driver_id:
         if USE_SYNTHETIC_FALLBACK:
             return _synthetic_snapshot()
@@ -309,7 +318,16 @@ def generate_dashboard_snapshot() -> Dict[str, Any]:  # mirrors original dashboa
             )
 
     # Factors aggregated (placeholder zeros until stored)
-    agg = {k: 0 for k in ("hardBraking", "aggressiveTurning", "followingDistance", "excessiveSpeeding", "lateNightDriving")}
+    agg = {
+        k: 0
+        for k in (
+            "hardBraking",
+            "aggressiveTurning",
+            "followingDistance",
+            "excessiveSpeeding",
+            "lateNightDriving",
+        )
+    }
 
     return {
         "profile": profile,
@@ -357,6 +375,7 @@ def _synthetic_snapshot() -> Dict[str, Any]:  # original synthetic logic extract
     now = int(time.time())
     events: List[Dict[str, Any]] = []
     last = feature_rows[-1]
+
     def add_events(kind: str, value: float):
         for i in range(int(min(5, max(0, round(value))))):
             sev = "high" if value > 8 else "moderate" if value > 3 else "low"
@@ -370,20 +389,49 @@ def _synthetic_snapshot() -> Dict[str, Any]:  # original synthetic logic extract
                     "speedMph": round(random.uniform(25, 75), 1),
                 }
             )
+
     add_events("hardBraking", last.get("hard_braking_events_per_100mi", 0))
     add_events("aggressiveTurning", last.get("aggressive_turning_events_per_100mi", 0))
     add_events("followingDistance", last.get("tailgating_time_ratio", 0) * 10)
     add_events("excessiveSpeeding", last.get("speeding_minutes_per_100mi", 0))
     add_events("lateNightDriving", last.get("late_night_miles_per_100mi", 0))
     base_prem_env = BASE_PREMIUM
-    profile = {"id": driver_id, "name": "Dashboard Driver", "policyNumber": "POLICY-" + driver_id[-4:], "basePremium": base_prem_env, "currentMonth": monthly_scores[-1]["month"]}
+    profile = {
+        "id": driver_id,
+        "name": "Dashboard Driver",
+        "policyNumber": "POLICY-" + driver_id[-4:],
+        "basePremium": base_prem_env,
+        "currentMonth": monthly_scores[-1]["month"],
+    }
     projections: List[Dict[str, Any]] = []
     if len(monthly_scores) >= 2:
-        last_p = monthly_scores[-1]["premium"]; prev_p = monthly_scores[-2]["premium"]; trend = last_p - prev_p
+        last_p = monthly_scores[-1]["premium"]
+        prev_p = monthly_scores[-2]["premium"]
+        trend = last_p - prev_p
         for i in range(1, 4):
-            projections.append({"date": f"{int(profile['currentMonth'][:4])}-{int(profile['currentMonth'][5:7])+i:02d}-01", "projectedPremium": round(max(50, min(400, last_p + trend * i * 0.6)), 2)})
-    agg = {k: 0 for k in ("hardBraking", "aggressiveTurning", "followingDistance", "excessiveSpeeding", "lateNightDriving")}
-    return {"profile": profile, "history": monthly_scores, "recentEvents": events[:20], "projections": projections, "currentFactors": agg}
+            projections.append(
+                {
+                    "date": f"{int(profile['currentMonth'][:4])}-{int(profile['currentMonth'][5:7])+i:02d}-01",
+                    "projectedPremium": round(max(50, min(400, last_p + trend * i * 0.6)), 2),
+                }
+            )
+    agg = {
+        k: 0
+        for k in (
+            "hardBraking",
+            "aggressiveTurning",
+            "followingDistance",
+            "excessiveSpeeding",
+            "lateNightDriving",
+        )
+    }
+    return {
+        "profile": profile,
+        "history": monthly_scores,
+        "recentEvents": events[:20],
+        "projections": projections,
+        "currentFactors": agg,
+    }
 
 
 def _extract_driver_from_pk(pk: str) -> str:
@@ -408,7 +456,8 @@ def _num(val):
 def _project_month(month: str, offset: int) -> str:
     try:
         y, m = month.split("-")
-        y = int(y); m = int(m)
+        y = int(y)
+        m = int(m)
         m += offset
         y += (m - 1) // 12
         m = ((m - 1) % 12) + 1
@@ -429,7 +478,9 @@ def _cors_headers(extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
     return base
 
 
-def lambda_handler(event: Dict[str, Any], context: Any):  # AWS-style signature + dashboard GET routing
+def lambda_handler(
+    event: Dict[str, Any], context: Any
+):  # AWS-style signature + dashboard GET routing
     try:
         if isinstance(event, dict):
             method = event.get("httpMethod")
@@ -443,7 +494,9 @@ def lambda_handler(event: Dict[str, Any], context: Any):  # AWS-style signature 
                 if TELEMETRY_TABLE:
                     ddb = _get_ddb()
                     if ddb is None:
-                        status = "degraded"; code = 500; details["ddb"] = "unavailable"
+                        status = "degraded"
+                        code = 500
+                        details["ddb"] = "unavailable"
                     else:
                         try:
                             ddb.describe_table(TableName=TELEMETRY_TABLE)
@@ -451,19 +504,37 @@ def lambda_handler(event: Dict[str, Any], context: Any):  # AWS-style signature 
                             if not scan.get("Items"):
                                 details["data"] = "empty"
                         except Exception as ex:  # noqa: BLE001
-                            status = "error"; code = 500; details["error"] = str(ex)
+                            status = "error"
+                            code = 500
+                            details["error"] = str(ex)
                 else:
                     details["ddb"] = "table_env_missing"
-                return {"statusCode": code, "headers": _cors_headers(), "body": json.dumps({"status": status, **details})}
+                return {
+                    "statusCode": code,
+                    "headers": _cors_headers(),
+                    "body": json.dumps({"status": status, **details}),
+                }
             # Dashboard snapshot (DB backed)
             if method == "GET":
                 try:
                     snapshot = generate_dashboard_snapshot()
-                    return {"statusCode": 200, "headers": _cors_headers(), "body": json.dumps(snapshot)}
+                    return {
+                        "statusCode": 200,
+                        "headers": _cors_headers(),
+                        "body": json.dumps(snapshot),
+                    }
                 except FileNotFoundError:
-                    return {"statusCode": 404, "headers": _cors_headers(), "body": json.dumps({"message": "No data"})}
+                    return {
+                        "statusCode": 404,
+                        "headers": _cors_headers(),
+                        "body": json.dumps({"message": "No data"}),
+                    }
                 except Exception as ex:  # noqa: BLE001
-                    return {"statusCode": 500, "headers": _cors_headers(), "body": json.dumps({"message": "dashboard_error", "detail": str(ex)})}
+                    return {
+                        "statusCode": 500,
+                        "headers": _cors_headers(),
+                        "body": json.dumps({"message": "dashboard_error", "detail": str(ex)}),
+                    }
 
         # Pricing (expects JSON body)
         body = event.get("body") if isinstance(event, dict) else None

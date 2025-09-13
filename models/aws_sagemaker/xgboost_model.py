@@ -212,11 +212,13 @@ def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.Da
             tailgating_effect = tailgating_ratio * 1.6  # slightly reduced
             speed_braking_interaction = (speeding_minutes / 12) * (hard_braking / 6) * 0.5
             speeding_linear = 0.075 * speeding_minutes  # lower linear weight to reduce overall mean
-            speeding_convex = 0.015 * (speeding_minutes ** 2 / 110.0)
+            speeding_convex = 0.015 * (speeding_minutes**2 / 110.0)
 
             # Car value severity proxy (normalized later) influences baseline shift
             # Raw car value draw for this synthetic training row (mirrors later raw normalization logic)
-            raw_car_value = RNG.normal(35000, 12000) if driver_type != "risky" else RNG.normal(45000,15000)
+            raw_car_value = (
+                RNG.normal(35000, 12000) if driver_type != "risky" else RNG.normal(45000, 15000)
+            )
             car_value_norm_tmp = max(0.0, raw_car_value / 10000.0)
 
             linear_risk = (
@@ -243,8 +245,10 @@ def synthesize_dataset_improved(n_drivers: int = 800, periods: int = 6) -> pd.Da
 
             # raw_car_value already computed above for linear_risk; reuse
             car_sportiness = np.clip(
-                (0.15 if driver_type=="safe" else 0.35 if driver_type=="moderate" else 0.6)
-                + RNG.normal(0,0.08), 0, 1
+                (0.15 if driver_type == "safe" else 0.35 if driver_type == "moderate" else 0.6)
+                + RNG.normal(0, 0.08),
+                0,
+                1,
             )
             car_value_norm = raw_car_value / 10000.0  # normalization for model stability
             car_speeding_interaction = car_sportiness * speeding_minutes
@@ -359,7 +363,10 @@ def train_model(
         "pred_std": val_std,
     }
     artifacts = ModelArtifacts(
-        booster=booster, feature_pipeline=pipeline, baseline_risk=baseline_risk, dist_stats=dist_stats
+        booster=booster,
+        feature_pipeline=pipeline,
+        baseline_risk=baseline_risk,
+        dist_stats=dist_stats,
     )
     metrics.update(dist_stats)
     return artifacts, metrics
@@ -425,7 +432,9 @@ def predict_fn(input_data: pd.DataFrame, model: ModelArtifacts):  # type: ignore
     p5 = dist.get("pred_p5")
     p95 = dist.get("pred_p95")
     scaling_factor_env = os.environ.get("PREMIUM_SCALING_TARGET_SPREAD")
-    target_spread = float(scaling_factor_env) if scaling_factor_env else 0.35  # desired (p95 - p5) * scale ≈ 0.35
+    target_spread = (
+        float(scaling_factor_env) if scaling_factor_env else 0.35
+    )  # desired (p95 - p5) * scale ≈ 0.35
     if p5 is not None and p95 is not None and (p95 - p5) > 1e-6:
         # Derive scaling so that (p95 - p5) * scale ~= target_spread
         scaling_factor = target_spread / (p95 - p5)

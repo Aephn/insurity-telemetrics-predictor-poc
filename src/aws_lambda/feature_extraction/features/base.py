@@ -16,5 +16,7 @@ class BaseFeatureCalculator(Protocol):
     def update(self, state: Dict[str, Any], event: Dict[str, Any]) -> None:  # noqa: D401
         raise NotImplementedError
 
-    def finalize(self, state: Dict[str, Any], shared: Dict[str, Any]) -> Dict[str, Any]:  # noqa: D401
+    def finalize(
+        self, state: Dict[str, Any], shared: Dict[str, Any]
+    ) -> Dict[str, Any]:  # noqa: D401
         raise NotImplementedError

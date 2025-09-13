@@ -32,12 +32,8 @@ DASHBOARD_API_BASE = os.getenv(
     "DASHBOARD_API_BASE",
     "https://7e9o2dxu72.execute-api.us-east-1.amazonaws.com/dev",
 )
-DASHBOARD_ENDPOINT = os.getenv(
-    "DASHBOARD_URL", f"{DASHBOARD_API_BASE}/dashboard"
-)
-HEALTH_ENDPOINT = os.getenv(
-    "DASHBOARD_HEALTH_URL", f"{DASHBOARD_API_BASE}/healthz"
-)
+DASHBOARD_ENDPOINT = os.getenv("DASHBOARD_URL", f"{DASHBOARD_API_BASE}/dashboard")
+HEALTH_ENDPOINT = os.getenv("DASHBOARD_HEALTH_URL", f"{DASHBOARD_API_BASE}/healthz")
 
 ENDPOINTS = {
     "dashboard": DASHBOARD_ENDPOINT,
@@ -48,15 +44,16 @@ ENDPOINTS = {
 # CONFIG (adjust as needed)
 # ---------------------------------------------------------------------------
 TARGETS = ["health", "dashboard"]  # order of endpoints to hit
-TIMEOUT_SECS = 10.0                  # HTTP timeout
-REPEAT = 1                           # number of sequential full passes
-SLEEP_BETWEEN = 0.5                  # delay between passes
-PRINT_JSON = True                    # pretty print JSON responses
+TIMEOUT_SECS = 10.0  # HTTP timeout
+REPEAT = 1  # number of sequential full passes
+SLEEP_BETWEEN = 0.5  # delay between passes
+PRINT_JSON = True  # pretty print JSON responses
 ASSERT_FIELDS: list[str] | None = ["generated_at", "drivers"]  # keys expected in /dashboard
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def fetch(client: httpx.Client, name: str, url: str) -> tuple[int, Any]:
     try:
@@ -99,6 +96,7 @@ def check_dashboard_schema(payload: Any) -> bool:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     print("Dashboard API test starting")
