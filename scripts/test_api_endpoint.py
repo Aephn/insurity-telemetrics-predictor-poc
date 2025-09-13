@@ -20,6 +20,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
@@ -49,14 +50,21 @@ ENDPOINTS = {
 # -------------------------------------------------------------
 # CONFIG (adjust as needed)
 # -------------------------------------------------------------
-TARGET_PATH = "location"        # one of keys in ENDPOINTS or set TARGET_URL directly
-TARGET_URL: str | None = None    # override full URL if desired
-EVENT_COUNT = 2                  # number of valid events
-INCLUDE_INVALID = False          # add one invalid record to force 207
-PRINT_PAYLOAD = True             # print JSON payload before sending
-TIMEOUT_SECS = 10.0              # HTTP timeout
-REPEAT = 1                       # number of sequential requests
-SLEEP_BETWEEN = 0.5              # delay between repeats (seconds)
+TARGET_PATH = "location"         # one of keys in ENDPOINTS or set TARGET_URL directly
+TARGET_URL: str | None = None     # override full URL if desired
+EVENT_COUNT = 2                   # number of valid events (ignored if DIRECT_EVENTS_FILE used)
+INCLUDE_INVALID = False           # add one invalid record to force 207
+PRINT_PAYLOAD = True              # print JSON payload before sending
+TIMEOUT_SECS = 10.0               # HTTP timeout
+REPEAT = 1                        # number of sequential requests
+SLEEP_BETWEEN = 0.5               # delay between repeats (seconds)
+
+# --- New deterministic / direct injection controls ---
+RANDOM_SEED: int | None = None    # set int for deterministic pseudo-random generation
+FIXED_DRIVER_ID: str | None = None  # force all events to use this driver id
+FIXED_EVENT_TYPE: str | None = None  # force event_type to this string (must be one of EVENT_TYPES below)
+USE_VARIANTS = True               # if False, do not randomize driver_id/trip_id each event
+DIRECT_EVENTS_FILE: str | None = None  # path to JSON file containing an array of events to send as-is
 
 EVENT_TYPES = [
     "hard_braking",
@@ -67,26 +75,34 @@ EVENT_TYPES = [
     "ping",
 ]
 
+if RANDOM_SEED is not None:
+    random.seed(RANDOM_SEED)
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _stable_id(prefix: str, idx: int) -> str:
+    # Deterministic id generation when USE_VARIANTS is False
+    return f"{prefix}{idx:05d}" if not USE_VARIANTS else f"{prefix}-{random.randint(10000,99999)}"
+
+
 def gen_event(idx: int, driver_id: str | None = None) -> dict:
-    etype = random.choice(EVENT_TYPES)
+    etype = FIXED_EVENT_TYPE or random.choice(EVENT_TYPES)
+    d_id = driver_id or FIXED_DRIVER_ID or (f"D{random.randint(1000,9999)}" if USE_VARIANTS else _stable_id("D", 0))
+    trip_id = _stable_id("T", idx) if not USE_VARIANTS else f"T-{random.randint(10000,99999)}"
     data = {
-        "event_id": uuid.uuid4().hex,
-        "driver_id": driver_id or f"D{random.randint(1000,9999)}",
-        "trip_id": f"T-{random.randint(10000,99999)}",
+        "event_id": uuid.uuid4().hex if USE_VARIANTS else f"E{idx:08d}",
+        "driver_id": d_id,
+        "trip_id": trip_id,
         "ts": now_iso(),
         "event_type": etype,
         "latitude": round(random.uniform(25.0, 49.0), 5),
         "longitude": round(random.uniform(-124.0, -67.0), 5),
         "speed_mph": round(random.uniform(0, 85), 1),
         "heading_deg": random.randint(0, 359),
-    # Keep period_minute within schema constraint (<= 100000)
-    # Use modulo of epoch minutes to stay deterministic-ish but valid.
-    "period_minute": int(time.time() // 60) % 100000,
+        "period_minute": int(time.time() // 60) % 100000,
     }
     if etype == "hard_braking":
         data["braking_g"] = round(random.uniform(0.1, 0.9), 2)
@@ -113,11 +129,18 @@ def maybe_make_invalid(ev: dict) -> dict:
 
 
 def build_payload(count: int, include_invalid: bool) -> list[dict]:
-    events: list[dict] = []
-    for i in range(count):
-        ev = gen_event(i)
-        events.append(ev)
-    if include_invalid and events:
+    if DIRECT_EVENTS_FILE:
+        p = Path(DIRECT_EVENTS_FILE)
+        raw = json.loads(p.read_text())
+        if not isinstance(raw, list):
+            raise SystemExit("DIRECT_EVENTS_FILE must contain a JSON array of event objects")
+        events = raw
+    else:
+        events: list[dict] = []
+        for i in range(count):
+            ev = gen_event(i)
+            events.append(ev)
+    if include_invalid and events and not DIRECT_EVENTS_FILE:
         events.append(maybe_make_invalid(events[0]))
     return events
 

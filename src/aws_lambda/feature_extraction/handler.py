@@ -387,8 +387,31 @@ def lambda_handler(event, context):  # type: ignore
                     continue
 
     # ---------------- Persistence into single-table DynamoDB ----------------
-    # Prefer priced items; fall back to raw predictions
-    persistence_items = priced_items if priced_items else predictions
+    # Prefer priced items; else raw predictions; else (Option B) fallback to feature rows so dashboard has data.
+    persistence_items = []
+    if priced_items:
+        persistence_items = priced_items
+    elif predictions:
+        persistence_items = predictions
+    else:
+        # Fallback: create minimal persistence payloads from feature rows (no model outputs yet)
+        for fr in feature_rows:
+            persistence_items.append({
+                "driver_id": fr.get("driver_id"),
+                "period_key": fr.get("period_key"),
+                "fallback_persist": True,
+                # store a light subset of features that might help future backfill/debug (avoid huge item)
+                "features_subset": {
+                    k: fr.get(k) for k in (
+                        "miles",
+                        "trips",
+                        "hard_braking_events_per_100mi",
+                        "speeding_minutes_per_100mi",
+                        "night_minutes_ratio",
+                        "car_value_norm",
+                    ) if k in fr
+                },
+            })
     if persistence_items and TELEMETRY_TABLE_NAME:
         ddbc = _get_ddb()
         if ddbc is not None:
@@ -424,6 +447,15 @@ def lambda_handler(event, context):  # type: ignore
                             ddb_item["pricing_json"] = {"S": json.dumps(priced_obj)}
                         except Exception:  # pragma: no cover
                             pass
+                    if item.get("fallback_persist"):
+                        ddb_item["fallback_persist"] = {"BOOL": True}
+                        # Include a compact feature subset if present
+                        fs = item.get("features_subset")
+                        if fs:
+                            try:
+                                ddb_item["features_subset_json"] = {"S": json.dumps(fs)}
+                            except Exception:  # pragma: no cover
+                                pass
                     ddbc.put_item(TableName=TELEMETRY_TABLE_NAME, Item=ddb_item)
                 except Exception:  # pragma: no cover
                     continue
@@ -481,6 +513,8 @@ def lambda_handler(event, context):  # type: ignore
                         try: period_item["base_premium"] = {"N": str(float(base_premium))}
                         except Exception:  # pragma: no cover
                             pass
+                    if item.get("fallback_persist"):
+                        period_item["fallback_persist"] = {"BOOL": True}
                     try:
                         ddbc.put_item(TableName=TELEMETRY_TABLE_NAME, Item=period_item)
                     except Exception:  # pragma: no cover
@@ -496,6 +530,9 @@ def lambda_handler(event, context):  # type: ignore
         "feature_rows": len(feature_rows),
         "kinesis": meta,
         "predictions": len(predictions),
+        "priced_items": len(priced_items),
+        "persisted_items": len(persistence_items),
+        "fallback_mode": bool(persistence_items and not (priced_items or predictions)),
         "sagemaker_enabled": bool(SAGEMAKER_ENDPOINT),
     }
 
