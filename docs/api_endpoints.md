@@ -129,3 +129,55 @@ All endpoints: POST, `Content-Type: application/json`. Body may be a single obje
   }
 ]
 ```
+
+---
+# Dashboard API Endpoints
+
+These endpoints are served by the pricing/dashboard Lambda (combined handler) and provide aggregated telemetry + pricing insights for a single driver (current synthetic or DynamoDB-backed data).
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/dashboard` | GET | Returns dashboard JSON (profile, history, recentEvents, projections, currentFactors) |
+| `/healthz`   | GET | Health & dependency check (DynamoDB table access) |
+
+### /dashboard Response Shape (Representative Example)
+```json
+{
+  "profile": {"id": "D2235", "policyNumber": "POLICY-2235", "basePremium": 190, "currentMonth": "2025-09"},
+  "history": [
+    {"month": "2025-07", "safetyScore": 72, "premium": 205.4, "miles": 820.1, "riskScore": 0.62, "modelMultiplier": 1.12,
+     "factors": {"hardBraking": 7, "aggressiveTurning": 2, "followingDistance": 1, "excessiveSpeeding": 12, "lateNightDriving": 8}}
+  ],
+  "recentEvents": [
+    {"id": "evt_hardBraking_0", "timestamp": "2025-09-13T01:21:00Z", "type": "hardBraking", "severity": "moderate", "value": 7, "speedMph": 46.2}
+  ],
+  "projections": [
+    {"date": "2025-10-01", "projectedPremium": 207.1},
+    {"date": "2025-11-01", "projectedPremium": 208.3}
+  ],
+  "currentFactors": {"hardBraking": 7, "aggressiveTurning": 2, "followingDistance": 1, "excessiveSpeeding": 12, "lateNightDriving": 8},
+  "mode": "bad",
+  "recentEventsCount": 42,
+  "lastMutationTs": 1694568061
+}
+```
+
+### /healthz Response
+```text
+OK
+```
+
+### Status Codes
+- `/dashboard`: 200 on success, 404 if no period data (when DynamoDB backing has no items), 500 on internal error.
+- `/healthz`: 200 on success, 500 on internal error.
+
+### Testing Locally
+Use the provided script:
+```bash
+python scripts/test_dashboard_api.py
+```
+Override endpoints with env vars:
+```bash
+export DASHBOARD_API_BASE="http://localhost:8787"  # if using mock server
+python scripts/test_dashboard_api.py
+```

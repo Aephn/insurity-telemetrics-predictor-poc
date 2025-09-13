@@ -17,6 +17,7 @@ from models.aws_sagemaker.xgboost_model import (
 from src.aws_lambda.pricing_engine.handler import price_rows  # type: ignore
 
 MODEL_DIR = Path(os.getenv("MODEL_ARTIFACTS_DIR", "artifacts"))
+BASE_PREMIUM = float(os.getenv("BASE_PREMIUM", os.getenv("BASE_MONTHLY_PREMIUM", "190")))
 
 _ARTIFACTS: ModelArtifacts | None = None
 
@@ -112,11 +113,12 @@ def generate_snapshot() -> Dict[str, Any]:
     add_events("excessiveSpeeding", last.get("speeding_minutes_per_100mi", 0))
     add_events("lateNightDriving", last.get("late_night_miles_per_100mi", 0))
 
+    base_prem_env = BASE_PREMIUM
     profile = {
         "id": driver_id,
         "name": "Harrison Lin",
         "policyNumber": "POLICY-" + driver_id[-4:],
-        "basePremium": 110,
+        "basePremium": base_prem_env,
         "currentMonth": monthly_scores[-1]["month"],
     }
 

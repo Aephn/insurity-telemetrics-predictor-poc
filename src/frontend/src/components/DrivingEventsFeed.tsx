@@ -16,13 +16,15 @@ export function DrivingEventsFeed({ events }: Props) {
 }
 
 function Row({ evt }: { evt: DrivingEvent }) {
-  const ts = new Date(evt.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const d = new Date(evt.timestamp);
+  const ts = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const mmdd = `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
   return (
     <div style={{ display:'flex', alignItems:'center', gap:8, background:'#1b2129', border:'1px solid #272f38', padding:'0.45rem 0.6rem', borderRadius:8, fontSize:12 }}>
       <Severity severity={evt.severity} />
       <div style={{ flex:1 }}>
         <strong>{factorLabel(evt.type)}</strong> <span style={{ opacity:0.7 }}>+{evt.value}</span>
-        <div style={{ opacity:0.55 }}>{ts} • {evt.speedMph} mph</div>
+        <div style={{ opacity:0.55 }}>{ts} <span style={{ opacity:0.5 }}>({mmdd})</span> • {evt.speedMph} mph</div>
       </div>
       {evt.location && <div style={{ fontSize:11, opacity:0.5 }}>{evt.location.lat.toFixed(3)},{evt.location.lon.toFixed(3)}</div>}
     </div>

@@ -61,7 +61,8 @@ except Exception:  # pragma: no cover
     from .formulas import compute_behavior_adjustments, finalize_multiplier, compute_price  # type: ignore
 
 MODEL_DIR = Path(os.getenv("MODEL_ARTIFACTS_DIR", "artifacts"))
-BASE_MONTHLY_PREMIUM = float(os.getenv("BASE_MONTHLY_PREMIUM", "110"))
+# Canonical base premium for display & pricing seed. Prefer BASE_PREMIUM; fall back once to legacy BASE_MONTHLY_PREMIUM.
+BASE_PREMIUM = float(os.getenv("BASE_PREMIUM", os.getenv("BASE_MONTHLY_PREMIUM", "190")))
 MIN_PREMIUM = float(os.getenv("MIN_PREMIUM", "50"))
 MAX_PREMIUM = float(os.getenv("MAX_PREMIUM", "400"))
 MIN_FACTOR = float(os.getenv("MIN_FACTOR", "0.7"))
@@ -141,7 +142,7 @@ def price_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             max_factor=MAX_FACTOR,
         )
         price_info = compute_price(
-            base_premium=BASE_MONTHLY_PREMIUM,
+            base_premium=BASE_PREMIUM,
             final_multiplier=mult_info["final_multiplier"],
             min_premium=MIN_PREMIUM,
             max_premium=MAX_PREMIUM,
@@ -153,7 +154,7 @@ def price_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "pricing": {
                     **mult_info,
                     **price_info,
-                    "base_premium": BASE_MONTHLY_PREMIUM,
+                    "base_premium": BASE_PREMIUM,
                     "min_premium": MIN_PREMIUM,
                     "max_premium": MAX_PREMIUM,
                 },
@@ -285,11 +286,12 @@ def generate_dashboard_snapshot() -> Dict[str, Any]:  # mirrors original dashboa
     except (BotoCoreError, ClientError):  # pragma: no cover
         pass
 
+    base_prem_env = BASE_PREMIUM
     profile = {
         "id": driver_id,
         "name": f"Driver {driver_id[-4:]}" if len(driver_id) >= 4 else driver_id,
         "policyNumber": "POLICY-" + driver_id[-4:],
-        "basePremium": 110,
+        "basePremium": base_prem_env,
         "currentMonth": monthly_scores[-1]["month"],
     }
 
@@ -373,7 +375,8 @@ def _synthetic_snapshot() -> Dict[str, Any]:  # original synthetic logic extract
     add_events("followingDistance", last.get("tailgating_time_ratio", 0) * 10)
     add_events("excessiveSpeeding", last.get("speeding_minutes_per_100mi", 0))
     add_events("lateNightDriving", last.get("late_night_miles_per_100mi", 0))
-    profile = {"id": driver_id, "name": "Dashboard Driver", "policyNumber": "POLICY-" + driver_id[-4:], "basePremium": 110, "currentMonth": monthly_scores[-1]["month"]}
+    base_prem_env = BASE_PREMIUM
+    profile = {"id": driver_id, "name": "Dashboard Driver", "policyNumber": "POLICY-" + driver_id[-4:], "basePremium": base_prem_env, "currentMonth": monthly_scores[-1]["month"]}
     projections: List[Dict[str, Any]] = []
     if len(monthly_scores) >= 2:
         last_p = monthly_scores[-1]["premium"]; prev_p = monthly_scores[-2]["premium"]; trend = last_p - prev_p
