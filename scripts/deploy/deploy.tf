@@ -358,6 +358,7 @@ resource "aws_lambda_function" "feature_extraction" {
   SAGEMAKER_ENDPOINT_NAME = var.deploy_sagemaker ? aws_sagemaker_endpoint.xgb_ep[0].name : ""
   TELEMETRY_TABLE_NAME    = var.telemetry_table_name
   PRICING_LAMBDA_NAME     = aws_lambda_function.pricing_engine.function_name
+  MIN_EXPOSURE_MILES      = "0.0"
     }
   }
   depends_on = [aws_iam_role_policy_attachment.feature_basic, aws_iam_role_policy.feature_kinesis_read]

@@ -30,7 +30,7 @@ import httpx
 # ---------------------------------------------------------------------------
 DASHBOARD_API_BASE = os.getenv(
     "DASHBOARD_API_BASE",
-    "https://zakof81880.execute-api.us-east-1.amazonaws.com/dev",
+    "https://7e9o2dxu72.execute-api.us-east-1.amazonaws.com/dev",
 )
 DASHBOARD_ENDPOINT = os.getenv(
     "DASHBOARD_URL", f"{DASHBOARD_API_BASE}/dashboard"

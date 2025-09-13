@@ -28,7 +28,7 @@ import httpx
 # -------------------------------------------------------------
 # NOTE: API Gateway URLs must include the stage segment (e.g., /dev). 403 'Forbidden' occurs if omitted.
 # Configure via env vars API_ROOT (without stage) and API_STAGE (default 'dev').
-API_ROOT = os.getenv("API_ROOT", "https://cs0bkcfdjf.execute-api.us-east-1.amazonaws.com").rstrip("/")
+API_ROOT = os.getenv("API_ROOT", "https://ayvkdmlnyh.execute-api.us-east-1.amazonaws.com").rstrip("/")
 API_STAGE = os.getenv("API_STAGE", "dev").strip("/")
 BASE_API = f"{API_ROOT}/{API_STAGE}"  # now includes stage
 
