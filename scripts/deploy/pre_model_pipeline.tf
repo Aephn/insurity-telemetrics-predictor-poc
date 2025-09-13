@@ -92,6 +92,17 @@ variable "telemetry_table_name" {
   type        = string
   default     = "TelemetryUserData"
 }
+variable "pricing_source_dir" {
+  description = "Path to pricing engine lambda source"
+  type        = string
+  default     = "../../src/aws_lambda/pricing_engine"
+}
+variable "pricing_dependencies" {
+  description = "Dependencies to vendor into pricing engine lambda"
+  type        = list(string)
+  # Pricing lambda only enriches existing SageMaker predictions; no heavy ML libs needed.
+  default     = []
+}
 
 locals {
   name_prefix = "telemetry-min-${var.env}"
@@ -227,6 +238,7 @@ resource "aws_lambda_function" "feature_extraction" {
       ENV                  = var.env
   SAGEMAKER_ENDPOINT_NAME = var.deploy_sagemaker ? aws_sagemaker_endpoint.xgb_ep[0].name : ""
   TELEMETRY_TABLE_NAME    = var.telemetry_table_name
+  PRICING_LAMBDA_NAME     = aws_lambda_function.pricing_engine.function_name
     }
   }
   depends_on = [aws_iam_role_policy_attachment.feature_basic, aws_iam_role_policy.feature_kinesis_read]
@@ -626,11 +638,65 @@ resource "aws_iam_role_policy" "feature_inference_permissions" {
           Effect   = "Allow"
           Action   = ["dynamodb:PutItem"]
           Resource = "arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.telemetry_table_name}"
+  })],
+  [jsonencode({
+          Effect = "Allow"
+          Action = ["lambda:InvokeFunction"]
+          Resource = aws_lambda_function.pricing_engine.arn
         })]
       ) : jsondecode(s)
     ]
   })
 }
+
+# ---------------- Pricing Engine Lambda (post-SageMaker enrichment) ----------------
+
+locals {
+  pricing_src_files = fileset(var.pricing_source_dir, "**")
+  pricing_src_hash  = sha256(join("", [for f in local.pricing_src_files : filesha256("${var.pricing_source_dir}/${f}")]))
+  pricing_deps_key  = join(",", var.pricing_dependencies)
+  pricing_code_change_key = base64sha256("${local.pricing_src_hash}|${local.pricing_deps_key}")
+  pricing_bundle_path = "${path.module}/pricing_lambda_bundle.zip"
+}
+
+resource "null_resource" "pricing_build" {
+  triggers = { code = local.pricing_code_change_key }
+  provisioner "local-exec" {
+    working_dir = path.module
+    command     = "PRICING_DEPS=\"${join(" ", var.pricing_dependencies)}\" PRICING_SRC_DIR=${var.pricing_source_dir} USE_DOCKER=1 ./build_pricing_bundle.sh --no-upload"
+    interpreter = ["/bin/bash", "-lc"]
+  }
+}
+
+resource "aws_iam_role" "pricing_role" {
+  name = "${local.name_prefix}-pricing-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "pricing_basic" {
+  role       = aws_iam_role.pricing_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "pricing_engine" {
+  function_name = "${local.name_prefix}-pricing"
+  role          = aws_iam_role.pricing_role.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.11"
+  filename         = local.pricing_bundle_path
+  source_code_hash = local.pricing_code_change_key
+  timeout       = 15
+  memory_size   = 512
+  architectures = ["arm64"]
+  environment { variables = { ENV = var.env, MODEL_ARTIFACTS_DIR = "/var/task/artifacts" } }
+  depends_on = [null_resource.pricing_build, aws_iam_role_policy_attachment.pricing_basic]
+  tags = local.tags
+}
+
+output "pricing_lambda_name" { value = aws_lambda_function.pricing_engine.function_name }
 
 output "sagemaker_endpoint_name" {
   value       = var.deploy_sagemaker ? aws_sagemaker_endpoint.xgb_ep[0].name : null
