@@ -34,8 +34,12 @@ FEATURES_STREAM = os.getenv("FEATURES_STREAM_NAME")
 PK_FIELD = os.getenv("FEATURES_PARTITION_KEY_FIELD", "driver_id")
 PERIOD_GRANULARITY = os.getenv("PERIOD_GRANULARITY", "MONTH").upper()
 MIN_EXPOSURE_MILES = float(os.getenv("MIN_EXPOSURE_MILES", "5.0"))
+SAGEMAKER_ENDPOINT = os.getenv("SAGEMAKER_ENDPOINT_NAME", "").strip()
+TELEMETRY_TABLE_NAME = os.getenv("TELEMETRY_TABLE_NAME", "").strip()
 
 _kinesis_client = None
+_sagemaker_runtime = None
+_ddb_client = None
 
 
 def _get_kinesis():
@@ -43,6 +47,20 @@ def _get_kinesis():
     if _kinesis_client is None and boto3 is not None:
         _kinesis_client = boto3.client("kinesis")
     return _kinesis_client
+
+
+def _get_smr():
+    global _sagemaker_runtime  # noqa: PLW0603
+    if _sagemaker_runtime is None and boto3 is not None and SAGEMAKER_ENDPOINT:
+        _sagemaker_runtime = boto3.client("sagemaker-runtime")
+    return _sagemaker_runtime
+
+
+def _get_ddb():
+    global _ddb_client  # noqa: PLW0603
+    if _ddb_client is None and boto3 is not None and TELEMETRY_TABLE_NAME:
+        _ddb_client = boto3.client("dynamodb")
+    return _ddb_client
 
 
 def _period_key(ts: str) -> Tuple[str, str, str]:
@@ -249,9 +267,72 @@ def lambda_handler(event, context):  # type: ignore
     events = _decode_kinesis(event)
     feature_rows = _aggregate(events)
     meta = _emit_features(feature_rows)
-    return {"status": "ok", "input_events": len(events), "feature_rows": len(feature_rows), "kinesis": meta}
+
+    predictions: List[Dict[str, Any]] = []
+    if SAGEMAKER_ENDPOINT and feature_rows:
+        smr = _get_smr()
+        if smr is not None:
+            for row in feature_rows:
+                payload_obj = {k: v for k, v in row.items() if not isinstance(v, (dict, list))}
+                try:
+                    body = json.dumps(payload_obj)
+                    resp = smr.invoke_endpoint(
+                        EndpointName=SAGEMAKER_ENDPOINT,
+                        ContentType="application/json",
+                        Body=body,
+                        Accept="application/json",
+                    )
+                    raw = resp.get("Body").read().decode("utf-8")
+                    pred_json = json.loads(raw)
+                    # Flatten if prediction returns nested object list etc.
+                    predictions.append({
+                        "driver_id": row.get("driver_id"),
+                        "period_key": row.get("period_key"),
+                        "prediction": pred_json,
+                    })
+                except Exception:  # pragma: no cover
+                    continue
+
+    # ---------------- Persistence into single-table DynamoDB ----------------
+    if predictions and TELEMETRY_TABLE_NAME:
+        ddbc = _get_ddb()
+        if ddbc is not None:
+            for item in predictions:
+                try:
+                    driver_id = str(item.get("driver_id"))
+                    period_key = str(item.get("period_key"))
+                    ts_epoch = int(datetime.utcnow().timestamp())
+                    # PK/SK pattern: driver partition, prediction sort key with period granularity
+                    pk = f"DRIVER#{driver_id}"
+                    sk = f"PREDICTION#{period_key}"
+                    ddbc.put_item(
+                        TableName=TELEMETRY_TABLE_NAME,
+                        Item={
+                            "PK": {"S": pk},
+                            "SK": {"S": sk},
+                            "GSI1PK": {"S": pk},  # enable lookup by driver in events index
+                            "GSI1SK": {"S": f"PRED#{period_key}"},
+                            "GSI2PK": {"S": pk},  # allow period aggregate style queries
+                            "GSI2SK": {"S": f"PRED#{period_key}"},
+                            "entity_type": {"S": "prediction"},
+                            "prediction_json": {"S": json.dumps(item.get("prediction"))},
+                            "driver_id": {"S": driver_id},
+                            "period_key": {"S": period_key},
+                            "ts": {"N": str(ts_epoch)},
+                        },
+                    )
+                except Exception:  # pragma: no cover
+                    continue
+
+    return {
+        "status": "ok",
+        "input_events": len(events),
+        "feature_rows": len(feature_rows),
+        "kinesis": meta,
+        "predictions": len(predictions),
+        "sagemaker_enabled": bool(SAGEMAKER_ENDPOINT),
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover
-    # Simple local test with no records
     print(lambda_handler({"Records": []}, None))

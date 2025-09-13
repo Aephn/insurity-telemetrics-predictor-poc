@@ -62,6 +62,36 @@ variable "kinesis_shard_count" {
   type    = number
   default = 1
 }
+variable "model_artifacts_dir" {
+  description = "Local directory containing trained model artifacts (xgb_model.json, feature_pipeline.joblib, meta.json). If missing, we will synthesize by running local training script."
+  type        = string
+  default     = "../../artifacts"
+}
+variable "sagemaker_model_name" {
+  description = "Name for the SageMaker model and endpoint base."
+  type        = string
+  default     = "telemetry-xgb-model"
+}
+variable "deploy_sagemaker" {
+  description = "Whether to create SageMaker model + endpoint (bool)."
+  type        = bool
+  default     = true
+}
+variable "sagemaker_serverless_memory_mb" {
+  description = "Memory size (MB) for SageMaker serverless endpoint (must be within account quota)."
+  type        = number
+  default     = 3072
+}
+variable "model_packaging_revision" {
+  description = "Increment to force rebuild of model artifacts tarball when packaging logic changes."
+  type        = number
+  default     = 2
+}
+variable "telemetry_table_name" {
+  description = "Name of existing single-table DynamoDB (from databases.tf) to persist model predictions into."
+  type        = string
+  default     = "TelemetryUserData"
+}
 
 locals {
   name_prefix = "telemetry-min-${var.env}"
@@ -154,6 +184,8 @@ resource "aws_iam_role_policy" "feature_kinesis_read" {
   })
 }
 
+## (feature inference permissions moved lower after caller identity data block for account id)
+
 resource "aws_lambda_function" "validation" {
   function_name = "${local.name_prefix}-validation"
   role          = aws_iam_role.validation_role.arn
@@ -193,6 +225,8 @@ resource "aws_lambda_function" "feature_extraction" {
     variables = {
       FEATURES_STREAM_NAME = aws_kinesis_stream.events.name
       ENV                  = var.env
+  SAGEMAKER_ENDPOINT_NAME = var.deploy_sagemaker ? aws_sagemaker_endpoint.xgb_ep[0].name : ""
+  TELEMETRY_TABLE_NAME    = var.telemetry_table_name
     }
   }
   depends_on = [aws_iam_role_policy_attachment.feature_basic, aws_iam_role_policy.feature_kinesis_read]
@@ -437,6 +471,170 @@ resource "aws_api_gateway_deployment" "validation" {
       ]
     }))
   }
+}
+
+# ------------------------ SageMaker Model Deployment (Optional) ------------------------
+
+resource "random_id" "model_bucket_suffix" {
+  byte_length = 4
+  keepers = {
+    env = var.env
+  }
+}
+
+resource "aws_s3_bucket" "model_artifacts" {
+  count = var.deploy_sagemaker ? 1 : 0
+  bucket = "${local.name_prefix}-model-${random_id.model_bucket_suffix.hex}"
+  force_destroy = true
+  tags = local.tags
+}
+
+locals {
+  model_artifact_source_files = fileset(var.model_artifacts_dir, "**")
+  model_artifact_hash = length(local.model_artifact_source_files) > 0 ? sha256(join("", [for f in local.model_artifact_source_files : filesha256("${var.model_artifacts_dir}/${f}")])) : "empty"
+  model_package_key = "model_artifacts_${local.model_artifact_hash}.tar.gz"
+}
+
+resource "null_resource" "package_model" {
+  count = var.deploy_sagemaker ? 1 : 0
+  triggers = {
+  src_hash = local.model_artifact_hash
+  rev      = var.model_packaging_revision
+  }
+  provisioner "local-exec" {
+    when        = create
+    working_dir = path.module
+    # If artifacts dir is empty, run local training to create them, then tarball.
+    command = <<EOT
+      set -euo pipefail
+      ART_DIR="${var.model_artifacts_dir}"
+      if [ ! -d "$ART_DIR" ] || [ -z "$(ls -A "$ART_DIR" 2>/dev/null || true)" ]; then
+        echo "[model] Artifacts missing; generating via local training run"
+        ${var.python_executable} ../../models/aws_sagemaker/xgboost_model.py --local-train --model-dir "$ART_DIR"
+      fi
+      echo "[model] Original artifact directory listing:" 
+      ls -l "$ART_DIR"
+      # Expect training script to have produced xgboost-model already
+      if [ ! -f "$ART_DIR/xgboost-model" ]; then
+        echo "[model][ERROR] xgboost-model missing; re-run training to generate artifacts" >&2; exit 1
+      fi
+      STAGE_DIR=$(mktemp -d stage_booster_XXXX)
+      cp "$ART_DIR/xgboost-model" "$STAGE_DIR/"
+      echo "[model] Staged minimal contents:"; ls -l "$STAGE_DIR"
+      tar -C "$STAGE_DIR" -czf model_artifacts.tar.gz .
+      echo "[model] Created minimal model_artifacts.tar.gz (size: $(du -h model_artifacts.tar.gz | cut -f1))"
+EOT
+    interpreter = ["/bin/bash", "-lc"]
+  }
+}
+
+resource "aws_s3_object" "model_package" {
+  count  = var.deploy_sagemaker ? 1 : 0
+  bucket = aws_s3_bucket.model_artifacts[0].id
+  key    = local.model_package_key
+  source = "${path.module}/model_artifacts.tar.gz"
+  depends_on = [null_resource.package_model]
+}
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role" "sagemaker_execution" {
+  count = var.deploy_sagemaker ? 1 : 0
+  name  = "${local.name_prefix}-sagemaker-exec"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = { Service = "sagemaker.amazonaws.com" },
+      Action   = "sts:AssumeRole"
+    }]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "sagemaker_access" {
+  count = var.deploy_sagemaker ? 1 : 0
+  name  = "${local.name_prefix}-sagemaker-access"
+  role  = aws_iam_role.sagemaker_execution[0].id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      { Effect = "Allow", Action = ["s3:GetObject"], Resource = ["${aws_s3_bucket.model_artifacts[0].arn}/*"] },
+      { Effect = "Allow", Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], Resource = "*" }
+    ]
+  })
+}
+
+# Obtain latest XGBoost container URI (region specific). For prototype we hardcode a common version; adjust if unsupported.
+locals {
+  xgboost_image_version = "1.7-1"
+  # Use configured region variable to avoid deprecated aws_region.name attribute.
+  xgboost_repository    = "683313688378.dkr.ecr.${var.region}.amazonaws.com/sagemaker-xgboost:${local.xgboost_image_version}"
+}
+
+resource "aws_sagemaker_model" "xgb" {
+  count               = var.deploy_sagemaker ? 1 : 0
+  name                = var.sagemaker_model_name
+  execution_role_arn  = aws_iam_role.sagemaker_execution[0].arn
+  primary_container {
+    image          = local.xgboost_repository
+    mode           = "SingleModel"
+    model_data_url = "s3://${aws_s3_bucket.model_artifacts[0].bucket}/${aws_s3_object.model_package[0].key}"
+    environment = {
+      "PREMIUM_SCALING_TARGET_SPREAD" = "0.35"
+    }
+  }
+  depends_on = [aws_s3_object.model_package]
+  tags       = local.tags
+}
+
+resource "aws_sagemaker_endpoint_configuration" "xgb_cfg" {
+  count = var.deploy_sagemaker ? 1 : 0
+  name  = "${var.sagemaker_model_name}-cfg"
+  production_variants {
+    model_name    = aws_sagemaker_model.xgb[0].name
+    variant_name  = "AllTraffic"
+    serverless_config {
+      max_concurrency     = 2
+  memory_size_in_mb   = var.sagemaker_serverless_memory_mb
+    }
+  }
+  tags = local.tags
+}
+
+resource "aws_sagemaker_endpoint" "xgb_ep" {
+  count                = var.deploy_sagemaker ? 1 : 0
+  name                 = "${var.sagemaker_model_name}-ep"
+  endpoint_config_name = aws_sagemaker_endpoint_configuration.xgb_cfg[0].name
+  tags                 = local.tags
+}
+
+# Re-introduced here so we can (optionally) reference the endpoint ARN above
+resource "aws_iam_role_policy" "feature_inference_permissions" {
+  name = "${local.name_prefix}-feature-inference"
+  role = aws_iam_role.feature_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      for s in concat(
+        var.deploy_sagemaker ? [jsonencode({
+          Effect   = "Allow"
+          Action   = ["sagemaker:InvokeEndpoint"]
+          Resource = aws_sagemaker_endpoint.xgb_ep[0].arn
+        })] : [],
+        [jsonencode({
+          Effect   = "Allow"
+          Action   = ["dynamodb:PutItem"]
+          Resource = "arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.telemetry_table_name}"
+        })]
+      ) : jsondecode(s)
+    ]
+  })
+}
+
+output "sagemaker_endpoint_name" {
+  value       = var.deploy_sagemaker ? aws_sagemaker_endpoint.xgb_ep[0].name : null
+  description = "Deployed SageMaker endpoint name"
 }
 
 output "telemetry_endpoint" { value = "https://${aws_api_gateway_rest_api.validation.id}.execute-api.${var.region}.amazonaws.com/${var.env}/telemetry" }

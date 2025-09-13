@@ -134,6 +134,11 @@ class ModelArtifacts:
         # Save booster
         booster_path = model_dir / "xgb_model.json"
         self.booster.save_model(str(booster_path))
+        # Also save native binary form required by SageMaker built-in XGBoost serving (filename must be xgboost-model)
+        try:
+            self.booster.save_model(str(model_dir / "xgboost-model"))
+        except Exception:  # pragma: no cover
+            pass
         # Save preprocessing pipeline (simple joblib via numpy serialization fallback)
         import joblib
 

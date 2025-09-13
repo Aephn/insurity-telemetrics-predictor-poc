@@ -46,12 +46,11 @@ npm run preview
 
 ### Quick Start (Backend)
 
-NOTE: Ensure that you have a provisioned AWS IAM User that is allowed to provision the following services (AWS Kinesis, AWS Lambda, AWS S3 Bucket, AWS DynamoDB)
+NOTE: Ensure that you have a provisioned AWS IAM User that is allowed to provision the following services (AWS Kinesis, AWS Lambda, AWS S3 Bucket, AWS DynamoDB, AWS Sagemaker)
 
-
+0. Ensure Docker (building os-specific dependencies) and Terraform is Installed
 1. build tf script...
 2. run tf script...
-3. link sagemaker...
 
 
 
