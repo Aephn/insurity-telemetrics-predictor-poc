@@ -36,10 +36,13 @@ PERIOD_GRANULARITY = os.getenv("PERIOD_GRANULARITY", "MONTH").upper()
 MIN_EXPOSURE_MILES = float(os.getenv("MIN_EXPOSURE_MILES", "5.0"))
 SAGEMAKER_ENDPOINT = os.getenv("SAGEMAKER_ENDPOINT_NAME", "").strip()
 TELEMETRY_TABLE_NAME = os.getenv("TELEMETRY_TABLE_NAME", "").strip()
+PRICING_LAMBDA = os.getenv("PRICING_LAMBDA_NAME", "").strip()
 
 _kinesis_client = None
 _sagemaker_runtime = None
 _ddb_client = None
+_lambda_client = None
+_lambda_client = None
 
 
 def _get_kinesis():
@@ -61,6 +64,20 @@ def _get_ddb():
     if _ddb_client is None and boto3 is not None and TELEMETRY_TABLE_NAME:
         _ddb_client = boto3.client("dynamodb")
     return _ddb_client
+
+
+def _get_lambda():
+    global _lambda_client  # noqa: PLW0603
+    if _lambda_client is None and boto3 is not None and PRICING_LAMBDA:
+        _lambda_client = boto3.client("lambda")
+    return _lambda_client
+
+
+def _get_lambda():
+    global _lambda_client  # noqa: PLW0603
+    if _lambda_client is None and boto3 is not None:
+        _lambda_client = boto3.client("lambda")
+    return _lambda_client
 
 
 def _period_key(ts: str) -> Tuple[str, str, str]:
@@ -269,6 +286,9 @@ def lambda_handler(event, context):  # type: ignore
     meta = _emit_features(feature_rows)
 
     predictions: List[Dict[str, Any]] = []
+    # Index feature rows for later pricing enrichment
+    row_index = {(r.get("driver_id"), r.get("period_key")): r for r in feature_rows}
+    pricing_name = os.getenv("PRICING_LAMBDA_NAME", "").strip()
     if SAGEMAKER_ENDPOINT and feature_rows:
         smr = _get_smr()
         if smr is not None:
@@ -285,19 +305,94 @@ def lambda_handler(event, context):  # type: ignore
                     raw = resp.get("Body").read().decode("utf-8")
                     pred_json = json.loads(raw)
                     # Flatten if prediction returns nested object list etc.
+                    pricing_payload = {
+                        **{k: v for k, v in row.items() if not isinstance(v, (dict, list))},
+                    }
+                    # If SageMaker returned risk & multiplier attach them
+                    if isinstance(pred_json, dict):
+                        for k in ("risk_score", "premium_multiplier"):
+                            if k in pred_json:
+                                # map premium_multiplier to model_premium_multiplier expected by pricing lambda
+                                if k == "premium_multiplier":
+                                    pricing_payload["model_premium_multiplier"] = pred_json[k]
+                                else:
+                                    pricing_payload[k] = pred_json[k]
+                    priced_result = None
+                    if pricing_name:
+                        try:
+                            lmb = _get_lambda()
+                            if lmb is not None:
+                                resp_lambda = lmb.invoke(
+                                    FunctionName=pricing_name,
+                                    InvocationType="RequestResponse",
+                                    Payload=json.dumps({"body": json.dumps(pricing_payload)}).encode("utf-8"),
+                                )
+                                raw_body = resp_lambda.get("Payload").read().decode("utf-8")  # type: ignore
+                                body_json = json.loads(raw_body)
+                                if isinstance(body_json, dict) and body_json.get("statusCode") == 200:
+                                    priced_obj = json.loads(body_json.get("body", "{}"))
+                                    items = priced_obj.get("items") if isinstance(priced_obj, dict) else None
+                                    if items:
+                                        priced_result = items[0]
+                        except Exception:  # pragma: no cover
+                            priced_result = None
                     predictions.append({
                         "driver_id": row.get("driver_id"),
                         "period_key": row.get("period_key"),
-                        "prediction": pred_json,
+                        "prediction": priced_result or pred_json,
                     })
                 except Exception:  # pragma: no cover
                     continue
 
+    # ---------------- Optional Pricing Engine Enrichment ----------------
+    priced_items: List[Dict[str, Any]] = []
+    if PRICING_LAMBDA and predictions:
+        lclient = _get_lambda()
+        if lclient is not None:
+            for pred in predictions:
+                try:
+                    driver_id = pred.get("driver_id")
+                    period_key = pred.get("period_key")
+                    base_row = dict(row_index.get((driver_id, period_key), {}))
+                    pred_json = pred.get("prediction", {})
+                    # Extract single values if lists
+                    risk = pred_json.get("risk_score")
+                    mult = pred_json.get("premium_multiplier")
+                    if isinstance(risk, list):
+                        risk = risk[0] if risk else None
+                    if isinstance(mult, list):
+                        mult = mult[0] if mult else None
+                    if risk is not None:
+                        base_row["risk_score"] = risk
+                    if mult is not None:
+                        base_row["model_premium_multiplier"] = mult
+                    invoke_payload = {"body": json.dumps(base_row)}
+                    resp = lclient.invoke(
+                        FunctionName=PRICING_LAMBDA,
+                        InvocationType="RequestResponse",
+                        Payload=json.dumps(invoke_payload).encode("utf-8"),
+                    )
+                    raw_body = resp.get("Payload").read().decode("utf-8")  # type: ignore
+                    parsed = json.loads(raw_body)
+                    if parsed.get("statusCode") == 200:
+                        body_obj = json.loads(parsed.get("body", "{}"))
+                        items = body_obj.get("items") or []
+                        if items:
+                            priced_items.append({
+                                "driver_id": driver_id,
+                                "period_key": period_key,
+                                "priced": items[0],
+                            })
+                except Exception:  # pragma: no cover
+                    continue
+
     # ---------------- Persistence into single-table DynamoDB ----------------
-    if predictions and TELEMETRY_TABLE_NAME:
+    # Prefer priced items; fall back to raw predictions
+    persistence_items = priced_items if priced_items else predictions
+    if persistence_items and TELEMETRY_TABLE_NAME:
         ddbc = _get_ddb()
         if ddbc is not None:
-            for item in predictions:
+            for item in persistence_items:
                 try:
                     driver_id = str(item.get("driver_id"))
                     period_key = str(item.get("period_key"))
@@ -305,24 +400,95 @@ def lambda_handler(event, context):  # type: ignore
                     # PK/SK pattern: driver partition, prediction sort key with period granularity
                     pk = f"DRIVER#{driver_id}"
                     sk = f"PREDICTION#{period_key}"
-                    ddbc.put_item(
-                        TableName=TELEMETRY_TABLE_NAME,
-                        Item={
-                            "PK": {"S": pk},
-                            "SK": {"S": sk},
-                            "GSI1PK": {"S": pk},  # enable lookup by driver in events index
-                            "GSI1SK": {"S": f"PRED#{period_key}"},
-                            "GSI2PK": {"S": pk},  # allow period aggregate style queries
-                            "GSI2SK": {"S": f"PRED#{period_key}"},
-                            "entity_type": {"S": "prediction"},
-                            "prediction_json": {"S": json.dumps(item.get("prediction"))},
-                            "driver_id": {"S": driver_id},
-                            "period_key": {"S": period_key},
-                            "ts": {"N": str(ts_epoch)},
-                        },
-                    )
+                    prediction_obj = item.get("prediction") if "prediction" in item else None
+                    priced_obj = item.get("priced") if "priced" in item else None
+                    ddb_item = {
+                        "PK": {"S": pk},
+                        "SK": {"S": sk},
+                        "GSI1PK": {"S": pk},
+                        "GSI1SK": {"S": f"PRED#{period_key}"},
+                        "GSI2PK": {"S": pk},
+                        "GSI2SK": {"S": f"PRED#{period_key}"},
+                        "entity_type": {"S": "prediction"},
+                        "driver_id": {"S": driver_id},
+                        "period_key": {"S": period_key},
+                        "ts": {"N": str(ts_epoch)},
+                    }
+                    if prediction_obj is not None:
+                        try:
+                            ddb_item["prediction_json"] = {"S": json.dumps(prediction_obj)}
+                        except Exception:  # pragma: no cover
+                            pass
+                    if priced_obj is not None:
+                        try:
+                            ddb_item["pricing_json"] = {"S": json.dumps(priced_obj)}
+                        except Exception:  # pragma: no cover
+                            pass
+                    ddbc.put_item(TableName=TELEMETRY_TABLE_NAME, Item=ddb_item)
                 except Exception:  # pragma: no cover
                     continue
+
+            # Create period aggregate items (schema-aligned) for each priced or predicted record
+            for item in persistence_items:
+                try:
+                    driver_id = str(item.get("driver_id"))
+                    period_key = str(item.get("period_key"))
+                    ts_epoch = int(datetime.utcnow().timestamp())
+                    period_pk = f"USER#{driver_id}"
+                    period_sk = f"PERIOD#{period_key}"
+                    prediction_obj = item.get("prediction") if "prediction" in item else None
+                    priced_obj = item.get("priced") if "priced" in item else None
+                    risk_score = None
+                    final_premium = None
+                    model_mult = None
+                    base_premium = None
+                    if priced_obj:
+                        risk_score = priced_obj.get("risk_score")
+                        pricing_block = priced_obj.get("pricing") or {}
+                        final_premium = pricing_block.get("final_monthly_premium")
+                        model_mult = pricing_block.get("model_multiplier") or priced_obj.get("model_premium_multiplier")
+                        base_premium = pricing_block.get("base_premium")
+                    elif prediction_obj:
+                        rlist = prediction_obj.get("risk_score") if isinstance(prediction_obj, dict) else None
+                        if isinstance(rlist, list) and rlist:
+                            risk_score = rlist[0]
+                        mlist = prediction_obj.get("premium_multiplier") if isinstance(prediction_obj, dict) else None
+                        if isinstance(mlist, list) and mlist:
+                            model_mult = mlist[0]
+                    period_item = {
+                        "PK": {"S": period_pk},
+                        "SK": {"S": period_sk},
+                        "GSI2PK": {"S": f"PERIOD#{period_key}"},
+                        "GSI2SK": {"S": driver_id},
+                        "entity_type": {"S": "period"},
+                        "driver_id": {"S": driver_id},
+                        "period_key": {"S": period_key},
+                        "ts": {"N": str(ts_epoch)},
+                    }
+                    if risk_score is not None:
+                        try: period_item["risk_score"] = {"N": str(float(risk_score))}
+                        except Exception:  # pragma: no cover
+                            pass
+                    if final_premium is not None:
+                        try: period_item["final_monthly_premium"] = {"N": str(float(final_premium))}
+                        except Exception:  # pragma: no cover
+                            pass
+                    if model_mult is not None:
+                        try: period_item["model_multiplier"] = {"N": str(float(model_mult))}
+                        except Exception:  # pragma: no cover
+                            pass
+                    if base_premium is not None:
+                        try: period_item["base_premium"] = {"N": str(float(base_premium))}
+                        except Exception:  # pragma: no cover
+                            pass
+                    try:
+                        ddbc.put_item(TableName=TELEMETRY_TABLE_NAME, Item=period_item)
+                    except Exception:  # pragma: no cover
+                        pass
+                except Exception:  # pragma: no cover
+                    continue
+
+    # Replace placeholders in last put_item call by terraform-time static code? Not applicable. We need dynamic attribute assembly above.
 
     return {
         "status": "ok",

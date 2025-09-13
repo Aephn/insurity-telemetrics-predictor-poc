@@ -38,12 +38,24 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-from models.aws_sagemaker.xgboost_model import (
-    ModelArtifacts,
-    FEATURE_COLUMNS,
-    predict_fn,
-)
-from .formulas import compute_behavior_adjustments, finalize_multiplier, compute_price
+try:
+    from models.aws_sagemaker.xgboost_model import (  # type: ignore
+        ModelArtifacts,
+        FEATURE_COLUMNS,
+        predict_fn,
+    )
+except Exception:  # pragma: no cover
+    # Allow running in a minimal inference context if the training module isn't packaged.
+    from typing import Any as _Any  # fallback
+    ModelArtifacts = _Any  # type: ignore
+    FEATURE_COLUMNS = []  # type: ignore
+    def predict_fn(df, model):  # type: ignore
+        raise RuntimeError("predict_fn unavailable; model artifacts module not packaged")
+try:
+    # When deployed, the module may be at the root (no package context), so relative import can fail.
+    from formulas import compute_behavior_adjustments, finalize_multiplier, compute_price  # type: ignore
+except Exception:  # pragma: no cover
+    from .formulas import compute_behavior_adjustments, finalize_multiplier, compute_price  # type: ignore
 
 MODEL_DIR = Path(os.getenv("MODEL_ARTIFACTS_DIR", "artifacts"))
 BASE_MONTHLY_PREMIUM = float(os.getenv("BASE_MONTHLY_PREMIUM", "110"))
@@ -52,10 +64,10 @@ MAX_PREMIUM = float(os.getenv("MAX_PREMIUM", "400"))
 MIN_FACTOR = float(os.getenv("MIN_FACTOR", "0.7"))
 MAX_FACTOR = float(os.getenv("MAX_FACTOR", "1.5"))
 
-_ARTIFACTS: ModelArtifacts | None = None
+_ARTIFACTS: Any = None  # use Any for runtime flexibility when model module absent
 
 
-def _load_model() -> ModelArtifacts:
+def _load_model():  # return underlying model artifacts object
     global _ARTIFACTS  # noqa: PLW0603
     if _ARTIFACTS is None:
         if not (MODEL_DIR / "xgb_model.json").exists():
@@ -76,17 +88,23 @@ def _ensure_dataframe(rows: List[Dict[str, Any]]):
 def price_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not rows:
         return []
-    model = _load_model()
-    df = _ensure_dataframe(rows)
-    preds = predict_fn(df[FEATURE_COLUMNS].copy(), model)
-    risk_scores = preds["risk_score"]
-    model_multipliers = preds["premium_multiplier"]
+    need_model = any("risk_score" not in r or "model_premium_multiplier" not in r for r in rows)
+    if need_model:
+        model = _load_model()
+        df = _ensure_dataframe(rows)
+        preds = predict_fn(df[FEATURE_COLUMNS].copy(), model)
+        risk_scores = preds["risk_score"]
+        model_multipliers = preds["premium_multiplier"]
+    else:
+        # Use provided values directly
+        risk_scores = [r.get("risk_score") for r in rows]
+        model_multipliers = [r.get("model_premium_multiplier") for r in rows]
 
     output: List[Dict[str, Any]] = []
     for i, row in enumerate(rows):
         r = dict(row)  # shallow copy
-        r["risk_score"] = risk_scores[i]
-        r["model_premium_multiplier"] = model_multipliers[i]
+        r.setdefault("risk_score", risk_scores[i])
+        r.setdefault("model_premium_multiplier", model_multipliers[i])
 
         adjustments = compute_behavior_adjustments(row)
         mult_info = finalize_multiplier(
