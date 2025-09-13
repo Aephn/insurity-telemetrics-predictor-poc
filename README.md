@@ -81,6 +81,11 @@ python test_api_endpoint.py
 python test_dashboard_api.py
 ```
 
+Destroy Infrastructure (When Done)
+```bash
+terraform destroy
+```
+
 ## Quick Start (Local Backend)
 
 ```bash
