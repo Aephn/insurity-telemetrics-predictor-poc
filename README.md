@@ -17,7 +17,7 @@ This repository contains a prototype implementation for a telematics-enabled, us
 ## Quick Start (Frontend)
 
 ```bash
-cd frontend
+cd src/frontend
 npm install
 npm run dev
 ```
