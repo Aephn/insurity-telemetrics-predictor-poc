@@ -1,4 +1,6 @@
-## Telematics Integration in Auto Insurance (Prototype)
+ ## Telematics Integration in Auto Insurance (Prototype)
+
+**NOTE: This project was built across 3 days as part of the take-home project for the final round interview for Insurity AI for the Fall 2025 Quarter.**
 
 This repository contains a prototype implementation for a telematics-enabled, usage-based auto insurance platform. It includes (in progress) backend/data/model scaffolding and a newly added TypeScript + React dashboard frontend (simulation) that demonstrates how driver behavior can feed into dynamic premium pricing.
 
