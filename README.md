@@ -4,6 +4,7 @@
 
 ![alt text](docs/homepage.png)
 
+
 This repository contains a prototype implementation for a telematics-enabled, usage-based auto insurance platform. It includes an entire data pipeline that takes telemetry data from cars, and actively uses live-streamed data to predict monthly insurance premiums for drivers.
 
 ### Key Goals
