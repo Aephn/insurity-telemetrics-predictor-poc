@@ -97,11 +97,12 @@ variable "pricing_source_dir" {
   type        = string
   default     = "../../src/aws_lambda/pricing_engine"
 }
+## dashboard_source_dir no longer needed (dashboard reuses pricing bundle)
 variable "pricing_dependencies" {
   description = "Dependencies to vendor into pricing engine lambda"
   type        = list(string)
-  # Include numpy & pandas for pricing math / aggregation; keep list minimal to control bundle size.
-  default     = ["numpy", "pandas"]
+  # Pin versions to ensure manylinux wheels (avoid source build inside lambda base image lacking compilers)
+  default     = ["numpy==2.2.6", "pandas==2.3.2"]
 }
 variable "price_history_bucket_name" {
   description = "S3 bucket name for price history exports"
@@ -813,6 +814,144 @@ resource "aws_lambda_function" "pricing_engine" {
   depends_on = [null_resource.pricing_build, aws_iam_role_policy_attachment.pricing_basic]
   tags = local.tags
 }
+
+resource "aws_iam_role" "dashboard_role" {
+  name = "${local.name_prefix}-dashboard-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "dashboard_basic" {
+  role       = aws_iam_role.dashboard_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "dashboard_ddb_read" {
+  name = "${local.name_prefix}-dashboard-ddb-read"
+  role = aws_iam_role.dashboard_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"],
+        Resource = ["arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.telemetry_table_name}", "arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/${var.telemetry_table_name}/index/*"]
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "dashboard_snapshot" {
+  function_name = "${local.name_prefix}-dashboard-snapshot"
+  role          = aws_iam_role.dashboard_role.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.11"
+  # Reuse pricing bundle (contains numpy+pandas and model artifacts) for snapshot lambda
+  filename         = local.pricing_bundle_path
+  source_code_hash = local.pricing_code_change_key
+  timeout       = 20
+  memory_size   = 512
+  architectures = ["arm64"]
+  environment { variables = { ENV = var.env, MODEL_ARTIFACTS_DIR = "/var/task/artifacts" } }
+  depends_on = [null_resource.pricing_build, aws_iam_role_policy_attachment.dashboard_basic, aws_iam_role_policy.dashboard_ddb_read]
+  tags = local.tags
+}
+
+# ---------------- Dashboard API Gateway ----------------
+
+resource "aws_api_gateway_rest_api" "dashboard" {
+  name        = "${local.name_prefix}-dashboard-api"
+  description = "Frontend dashboard data API"
+}
+
+resource "aws_api_gateway_resource" "dashboard_root" {
+  rest_api_id = aws_api_gateway_rest_api.dashboard.id
+  parent_id   = aws_api_gateway_rest_api.dashboard.root_resource_id
+  path_part   = "dashboard"
+}
+
+resource "aws_api_gateway_method" "get_dashboard" {
+  rest_api_id   = aws_api_gateway_rest_api.dashboard.id
+  resource_id   = aws_api_gateway_resource.dashboard_root.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "get_dashboard_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.dashboard.id
+  resource_id             = aws_api_gateway_resource.dashboard_root.id
+  http_method             = aws_api_gateway_method.get_dashboard.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.dashboard_snapshot.invoke_arn
+}
+
+resource "aws_api_gateway_resource" "healthz" {
+  rest_api_id = aws_api_gateway_rest_api.dashboard.id
+  parent_id   = aws_api_gateway_rest_api.dashboard.root_resource_id
+  path_part   = "healthz"
+}
+
+resource "aws_api_gateway_method" "get_healthz" {
+  rest_api_id   = aws_api_gateway_rest_api.dashboard.id
+  resource_id   = aws_api_gateway_resource.healthz.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "get_healthz_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.dashboard.id
+  resource_id             = aws_api_gateway_resource.healthz.id
+  http_method             = aws_api_gateway_method.get_healthz.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.dashboard_snapshot.invoke_arn
+}
+
+resource "aws_lambda_permission" "apigw_invoke_dashboard" {
+  statement_id  = "AllowAPIGatewayInvokeDashboard"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dashboard_snapshot.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.dashboard.execution_arn}/*/GET/dashboard"
+}
+
+resource "aws_lambda_permission" "apigw_invoke_dashboard_healthz" {
+  statement_id  = "AllowAPIGatewayInvokeDashboardHealthz"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dashboard_snapshot.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.dashboard.execution_arn}/*/GET/healthz"
+}
+
+resource "aws_api_gateway_deployment" "dashboard" {
+  depends_on = [
+    aws_api_gateway_integration.get_dashboard_integration,
+    aws_api_gateway_integration.get_healthz_integration
+  ]
+  rest_api_id = aws_api_gateway_rest_api.dashboard.id
+  triggers = {
+    redeploy = sha1(jsonencode({
+      integrations = [
+        aws_api_gateway_integration.get_dashboard_integration.uri,
+        aws_api_gateway_integration.get_healthz_integration.uri,
+      ]
+    }))
+  }
+}
+
+resource "aws_api_gateway_stage" "dashboard" {
+  rest_api_id   = aws_api_gateway_rest_api.dashboard.id
+  deployment_id = aws_api_gateway_deployment.dashboard.id
+  stage_name    = var.env
+}
+
+output "dashboard_api_base" { value = "https://${aws_api_gateway_rest_api.dashboard.id}.execute-api.${var.region}.amazonaws.com/${var.env}" }
+output "dashboard_endpoint" { value = "https://${aws_api_gateway_rest_api.dashboard.id}.execute-api.${var.region}.amazonaws.com/${var.env}/dashboard" }
+output "dashboard_healthz"  { value = "https://${aws_api_gateway_rest_api.dashboard.id}.execute-api.${var.region}.amazonaws.com/${var.env}/healthz" }
 
 output "pricing_lambda_name" { value = aws_lambda_function.pricing_engine.function_name }
 output "dynamodb_table_name" { value = aws_dynamodb_table.telemetry.name }

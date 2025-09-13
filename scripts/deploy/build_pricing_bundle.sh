@@ -59,7 +59,16 @@ if [[ -n "$DEPS" ]]; then
       -v "$(pwd)/$WORK":/opt/build \
       -w /opt/build \
       "$RUNTIME_IMAGE" \
-      -c "python3.11 -m pip install --no-cache-dir --only-binary=:all: $DEPS -t . || python3.11 -m pip install --no-cache-dir $DEPS -t ."
+      -c "set -e; (python3.11 -m pip install --no-cache-dir --only-binary=:all: $DEPS -t . || python3.11 -m pip install --no-cache-dir $DEPS -t .); python3.11 - <<'PY'
+import importlib, sys
+missing=[]
+for m in ('numpy','pandas','pandas._config'):
+  try: importlib.import_module(m)
+  except Exception as e: missing.append(f'{m}:{e}')
+if missing:
+  print('[verify] Missing modules:', missing, file=sys.stderr); sys.exit(1)
+print('[verify] Core modules present')
+PY"
   else
     echo "[pricing] Using host pip (may produce incompatible wheels)" >&2
     pip install --no-cache-dir $DEPS -t "$WORK"
